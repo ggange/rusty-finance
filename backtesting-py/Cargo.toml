@@ -1,0 +1,13 @@
+[package]
+name = "backtesting-py"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "backtesting_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+backtesting = { path = "../backtesting" }
+pyo3 = { version = "0.23", features = ["extension-module"] }
+serde_json = "1.0"
