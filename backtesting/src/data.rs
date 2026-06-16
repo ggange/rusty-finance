@@ -6,27 +6,28 @@ use std::error::Error;
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Candle {
     /// The date of this trading bar.
-    #[serde(rename = "Date")]
+    /// Accepts CSV header `Date` or JSON key `date`.
+    #[serde(rename = "Date", alias = "date")]
     pub date: NaiveDate,
 
     /// Opening price of the period.
-    #[serde(rename = "Open")]
+    #[serde(rename = "Open", alias = "open")]
     pub open: f64,
 
     /// Highest price reached during the period.
-    #[serde(rename = "High")]
+    #[serde(rename = "High", alias = "high")]
     pub high: f64,
 
     /// Lowest price reached during the period.
-    #[serde(rename = "Low")]
+    #[serde(rename = "Low", alias = "low")]
     pub low: f64,
 
     /// Closing price of the period.
-    #[serde(rename = "Close")]
+    #[serde(rename = "Close", alias = "close")]
     pub close: f64,
 
     /// Total shares traded during the period.
-    #[serde(rename = "Volume")]
+    #[serde(rename = "Volume", alias = "volume")]
     pub volume: u64,
 }
 
