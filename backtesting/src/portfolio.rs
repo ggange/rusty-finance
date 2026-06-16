@@ -2,21 +2,29 @@ use chrono::NaiveDate;
 use serde::Serialize;
 use crate::strategy::Signal;
 
+/// A single point on the equity curve: the portfolio's net asset value on a given date.
 #[derive(Debug, Serialize, Clone)]
 pub struct EquityPoint {
     pub date: NaiveDate,
+    /// Net asset value: cash + shares × price at bar close.
     pub nav: f64,
 }
 
+/// A record of a single executed trade.
 #[derive(Debug, Serialize, Clone)]
 pub struct TradeRecord {
     pub date: NaiveDate,
+    /// Whether this was a buy or sell.
     pub action: Signal,
+    /// Number of shares transacted.
     pub shares: u32,
+    /// Execution price (bar's close).
     pub price: f64,
+    /// Cash balance immediately after the trade.
     pub cash_after: f64,
 }
 
+/// Tracks cash and share positions; records the NAV history and trade log.
 #[derive(Debug, Clone)]
 pub struct Portfolio {
     pub symbol: String,
@@ -27,6 +35,7 @@ pub struct Portfolio {
 }
 
 impl Portfolio {
+    /// Create a new portfolio with the given starting cash and ticker symbol.
     pub fn new(initial_cash: f64, symbol: String) -> Self {
         Self {
             symbol,
@@ -37,7 +46,9 @@ impl Portfolio {
         }
     }
 
-    /// Buy as many whole shares as cash allows.
+    /// Purchase as many whole shares as the current cash balance permits at `price`.
+    ///
+    /// No-op if `price <= 0` or cash is insufficient for even one share.
     pub fn buy_all(&mut self, price: f64, date: NaiveDate) {
         if price <= 0.0 {
             return;
@@ -57,7 +68,7 @@ impl Portfolio {
         });
     }
 
-    /// Liquidate all shares.
+    /// Liquidate the entire share position at `price`. No-op if no shares are held.
     pub fn sell_all(&mut self, price: f64, date: NaiveDate) {
         if self.shares == 0 {
             return;
@@ -74,22 +85,27 @@ impl Portfolio {
         });
     }
 
+    /// Append the current NAV to the equity curve using `price` as the mark-to-market value.
     pub fn record_nav(&mut self, price: f64, date: NaiveDate) {
         self.equity_curve.push(EquityPoint { date, nav: self.nav(price) });
     }
 
+    /// Compute the current net asset value: cash plus share count times `price`.
     pub fn nav(&self, price: f64) -> f64 {
         self.cash + self.shares as f64 * price
     }
 
+    /// Return the full equity curve recorded so far.
     pub fn equity_curve(&self) -> &[EquityPoint] {
         &self.equity_curve
     }
 
+    /// Return the trade log recorded so far.
     pub fn trades(&self) -> &[TradeRecord] {
         &self.trades
     }
 
+    /// Return the current cash balance.
     pub fn cash(&self) -> f64 {
         self.cash
     }

@@ -3,13 +3,21 @@ use std::collections::VecDeque;
 use crate::strategy::{Signal, Strategy};
 use crate::data::Candle;
 
+/// Selects the moving average algorithm used by [`MovingAverageCrossover`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum MAType {
+    /// Simple moving average — equal weight to all bars in the window.
     SMA,
+    /// Exponential moving average — exponentially decaying weights, seeded on the first full window.
     EMA,
+    /// Weighted moving average — linearly increasing weights (most recent bar has highest weight).
     WMA,
 }
 
+/// Generates Buy/Sell signals when the short-window MA crosses the long-window MA.
+///
+/// No signal is emitted until enough bars have accumulated to fill the long window.
+/// A crossover is detected by comparing the current short/long relationship to the previous bar's.
 pub struct MovingAverageCrossover {
     ma_type: MAType,
     short_window: usize,
@@ -23,6 +31,11 @@ pub struct MovingAverageCrossover {
 }
 
 impl MovingAverageCrossover {
+    /// Create a new crossover strategy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `short_window >= long_window` or either window is zero.
     pub fn new(ma_type: MAType, short_window: usize, long_window: usize) -> Self {
         assert!(short_window < long_window, "short_window must be less than long_window");
         assert!(short_window > 0 && long_window > 0, "windows must be non-zero");
