@@ -1,14 +1,19 @@
 use serde::Serialize;
 use crate::portfolio::EquityPoint;
 
+/// Aggregate performance statistics derived from an equity curve.
 #[derive(Debug, Serialize, Clone)]
 pub struct Metrics {
+    /// `last_nav / first_nav - 1`. E.g. `0.25` means +25%.
     pub total_return: f64,
+    /// Most negative peak-to-trough ratio. E.g. `-0.33` means a 33% drawdown.
     pub max_drawdown: f64,
+    /// Annualized Sharpe ratio, assuming zero risk-free rate and 252 trading days per year.
     pub sharpe_ratio: f64,
 }
 
 impl Metrics {
+    /// Compute metrics from an equity curve. Returns all-zeros if the curve has fewer than 2 points.
     pub fn compute(curve: &[EquityPoint]) -> Self {
         if curve.len() < 2 {
             return Self { total_return: 0.0, max_drawdown: 0.0, sharpe_ratio: 0.0 };
