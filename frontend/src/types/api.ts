@@ -1,0 +1,110 @@
+// TypeScript mirror of the FastAPI contract in api/main.py.
+
+// ─── Candle (lowercase keys the API expects) ────────────────────────────────
+export interface Candle {
+  date: string; // "YYYY-MM-DD"
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+// ─── Strategy selection (request side) ──────────────────────────────────────
+export type StrategyType = "ma_ema" | "ma_sma" | "ma_wma" | "rsi";
+
+export interface MAStrategy {
+  type: "ma_ema" | "ma_sma" | "ma_wma";
+  short_window: number;
+  long_window: number;
+}
+
+export interface RSIStrategy {
+  type: "rsi";
+  period: number;
+}
+
+export type StrategyRequest = MAStrategy | RSIStrategy;
+
+// ─── /strategies registry (metadata, response side) ─────────────────────────
+export interface StrategyParamMeta {
+  name: string; // "short_window" | "long_window" | "period"
+  type: "integer";
+  default: number;
+  min: number;
+  description?: string;
+}
+
+export interface StrategyMeta {
+  type: StrategyType;
+  name: string; // human label, e.g. "EMA Crossover"
+  description: string;
+  params: StrategyParamMeta[];
+}
+
+export interface StrategiesResponse {
+  strategies: StrategyMeta[];
+}
+
+// ─── /health ────────────────────────────────────────────────────────────────
+export interface HealthResponse {
+  status: "ok";
+  engine: "available" | "unavailable";
+}
+
+// ─── /backtest request ──────────────────────────────────────────────────────
+export interface BacktestRequest {
+  strategy: StrategyRequest;
+  candles: Candle[];
+  initial_cash: number;
+  commission: number;
+  slippage_pct: number;
+}
+
+// ─── /backtest response ─────────────────────────────────────────────────────
+export interface EquityPoint {
+  date: string;
+  nav: number;
+}
+
+export type TradeAction = "Buy" | "Sell";
+
+export interface Trade {
+  date: string;
+  action: TradeAction;
+  shares: number;
+  price: number;
+  commission: number;
+  cash_after: number;
+  pnl: number | null; // null on Buy
+}
+
+export interface Metrics {
+  total_return: number;
+  cagr: number;
+  annualized_volatility: number;
+  max_drawdown: number;
+  sharpe_ratio: number;
+  sortino_ratio: number;
+  win_rate: number | null;
+  trade_count: number;
+}
+
+export interface Benchmark {
+  total_return: number;
+  cagr: number;
+}
+
+export interface BacktestResponse {
+  equity_curve: EquityPoint[];
+  trades: Trade[];
+  metrics: Metrics;
+  benchmark: Benchmark;
+}
+
+// FastAPI error envelope (422 has a detail array; 503 has a detail string).
+export interface ApiErrorBody {
+  detail?:
+    | string
+    | Array<{ loc: (string | number)[]; msg: string; type: string }>;
+}
