@@ -25,7 +25,7 @@ api (FastAPI HTTP layer)
 
 | Tool | Version |
 |------|---------|
-| Rust | stable (edition 2021) |
+| Rust | stable (edition 2024) |
 | Python | ≥ 3.9 |
 | Node.js | ≥ 16 |
 | maturin | ≥ 1.0 |
@@ -114,7 +114,7 @@ Another process is listening on port 8000. Either:
 - Kill the process: `lsof -ti:8000 | xargs kill -9`
 - Or use a different port: `uvicorn api.main:app --reload --port 8001` (then update frontend proxy in `frontend/vite.config.ts`)
 
-**"ImportError: cannot import name 'backtesting_py'"**
+**"ModuleNotFoundError: No module named 'backtesting_py'"**
 The Python bindings haven't been built. Run `cd backtesting-py && maturin develop` and ensure you're in the same Python venv.
 
 **"Connection refused" when frontend tries to reach backend**
@@ -141,7 +141,7 @@ Use a different port and update your browser URL.
 The FastAPI backend isn't responding or the bindings aren't built. Check:
 1. `maturin develop` completed successfully
 2. `uvicorn api.main:app --reload` is running
-3. `curl http://localhost:8000/health` returns `{"engine":"available"}`
+3. `curl http://localhost:8000/health` returns `{"status":"ok","engine":"available"}`
 
 ### Data
 
