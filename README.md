@@ -45,10 +45,9 @@ maturin develop
 ```
 (Re-run after Rust changes; bindings are hot-reloaded into the same Python venv.)
 
-**Terminal 2 — Start FastAPI backend:**
+**Terminal 2 — Start FastAPI backend** (from repo root):
 ```bash
-cd api
-pip install -e ".[dev]"
+pip install -e "api/[dev]"
 uvicorn api.main:app --reload
 ```
 Backend runs at `http://localhost:8000`. The app serves swagger docs at `/docs`.
@@ -82,11 +81,12 @@ maturin develop     # build and install into current virtualenv
 
 ### API
 
+Run from the repo root:
+
 ```bash
-cd api
-pip install -e ".[dev]"
+pip install -e "api/[dev]"
 uvicorn api.main:app --reload   # start server at http://localhost:8000
-pytest tests/                   # run API tests
+pytest api/tests/               # run API tests
 ```
 
 ## CSV Format
