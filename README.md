@@ -36,21 +36,38 @@ Node dependencies installed via `npm install` in the `frontend/` directory.
 
 ## Quick Start
 
-Run the full app (backend API + React frontend) with three terminals:
+The project uses a Python virtualenv at `.venv/`. Activate it first in any terminal that runs Python commands:
+
+```bash
+source .venv/bin/activate   # macOS/Linux
+# .venv\Scripts\activate    # Windows
+```
+
+If `.venv` doesn't exist yet, create it and install deps:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install maturin
+pip install -e "api/[dev]"
+```
+
+Run the full app with three terminals (all from the repo root, with `.venv` active):
 
 **Terminal 1 — Build Python bindings:**
 ```bash
+source .venv/bin/activate
 cd backtesting-py
 maturin develop
 ```
-(Re-run after Rust changes; bindings are hot-reloaded into the same Python venv.)
+(Re-run after Rust changes; bindings are installed into `.venv`.)
 
-**Terminal 2 — Start FastAPI backend** (from repo root):
+**Terminal 2 — Start FastAPI backend:**
 ```bash
-pip install -e "api/[dev]"
+source .venv/bin/activate
 uvicorn api.main:app --reload
 ```
-Backend runs at `http://localhost:8000`. The app serves swagger docs at `/docs`.
+Backend runs at `http://localhost:8000`. Swagger docs at `/docs`.
 
 **Terminal 3 — Start Vite dev server:**
 ```bash
@@ -139,9 +156,10 @@ Use a different port and update your browser URL.
 
 **"Engine unavailable" message in the UI**
 The FastAPI backend isn't responding or the bindings aren't built. Check:
-1. `maturin develop` completed successfully
-2. `uvicorn api.main:app --reload` is running
-3. `curl http://localhost:8000/health` returns `{"status":"ok","engine":"available"}`
+1. `.venv` is activated (`source .venv/bin/activate`)
+2. `maturin develop` completed successfully (from `backtesting-py/`)
+3. `uvicorn api.main:app --reload` is running (from repo root)
+4. `curl http://localhost:8000/health` returns `{"status":"ok","engine":"available"}`
 
 ### Data
 
