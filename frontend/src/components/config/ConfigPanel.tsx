@@ -1,13 +1,13 @@
 import { Panel } from "../ui/Panel";
-import { DataSourceLoader } from "./DataSourceLoader";
-import { StrategyPicker } from "./StrategyPicker";
+import { AssetList } from "./AssetList";
 import { CostInputs } from "./CostInputs";
-import type { BacktestForm } from "../../state/useBacktestForm";
-import type { StrategyMeta } from "../../types/api";
+import type { PortfolioForm } from "../../state/usePortfolioForm";
+import type { Dataset, StrategyMeta } from "../../types/api";
 
 interface ConfigPanelProps {
   strategies: StrategyMeta[];
-  form: BacktestForm;
+  datasets: Dataset[];
+  form: PortfolioForm;
   onRun: () => void;
   running: boolean;
   engineAvailable: boolean;
@@ -15,33 +15,21 @@ interface ConfigPanelProps {
 
 export function ConfigPanel({
   strategies,
+  datasets,
   form,
   onRun,
   running,
   engineAvailable,
 }: ConfigPanelProps) {
-  const hasCandles = form.candles.length > 0;
-  const canRun = hasCandles && !running && engineAvailable;
+  const hasData = form.assets.some(
+    (a) => a.source.kind !== "none" && a.candles.length > 0,
+  );
+  const canRun = hasData && !running && engineAvailable;
 
   return (
     <div className="space-y-4">
-      <Panel title="Data source">
-        <DataSourceLoader
-          candles={form.candles}
-          fileName={form.fileName}
-          onCandles={form.setCandles}
-        />
-      </Panel>
-
-      <Panel title="Strategy">
-        <StrategyPicker
-          strategies={strategies}
-          strategyType={form.strategyType}
-          current={form.currentStrategyMeta}
-          params={form.params}
-          onTypeChange={form.setStrategyType}
-          onParam={form.setParam}
-        />
+      <Panel title="Portfolio">
+        <AssetList strategies={strategies} datasets={datasets} form={form} />
       </Panel>
 
       <Panel title="Costs">
@@ -70,9 +58,9 @@ export function ConfigPanel({
           backtesting-py.
         </p>
       )}
-      {!hasCandles && engineAvailable && (
+      {!hasData && engineAvailable && (
         <p className="text-center text-xs text-slate-500">
-          Load price data to enable the backtest.
+          Pick a dataset or upload a CSV for at least one asset to run.
         </p>
       )}
     </div>

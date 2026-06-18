@@ -102,6 +102,58 @@ export interface BacktestResponse {
   benchmark: Benchmark;
 }
 
+// ─── /datasets (server-side catalog) ────────────────────────────────────────
+export interface Dataset {
+  name: string; // file name, e.g. "AAPL.csv"
+  symbol: string; // file stem, e.g. "AAPL"
+  rows: number;
+  start: string;
+  end: string;
+}
+
+export interface DatasetsResponse {
+  datasets: Dataset[];
+}
+
+export interface DatasetCandlesResponse {
+  name: string;
+  candles: Candle[];
+}
+
+// ─── /portfolio request ─────────────────────────────────────────────────────
+export type AssetSource =
+  | { kind: "dataset"; name: string }
+  | { kind: "inline"; candles: Candle[] };
+
+export interface PortfolioAssetRequest {
+  symbol: string;
+  weight: number;
+  source: AssetSource;
+  strategy: StrategyRequest;
+}
+
+export interface PortfolioRequest {
+  assets: PortfolioAssetRequest[];
+  initial_cash: number;
+  commission: number;
+  slippage_pct: number;
+}
+
+// ─── /portfolio response ────────────────────────────────────────────────────
+// Each asset flattens a BacktestResponse plus its allocation metadata.
+export interface AssetResult extends BacktestResponse {
+  symbol: string;
+  weight: number;
+  allocated_cash: number;
+}
+
+export interface PortfolioResponse {
+  equity_curve: EquityPoint[];
+  metrics: Metrics;
+  benchmark: Benchmark;
+  assets: AssetResult[];
+}
+
 // FastAPI error envelope (422 has a detail array; 503 has a detail string).
 export interface ApiErrorBody {
   detail?:

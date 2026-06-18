@@ -20,3 +20,4 @@ data/*.csv
 .DS_Store
 .idea/
 .vscode/
+.gstack/

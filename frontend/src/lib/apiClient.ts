@@ -2,7 +2,11 @@ import type {
   ApiErrorBody,
   BacktestRequest,
   BacktestResponse,
+  DatasetCandlesResponse,
+  DatasetsResponse,
   HealthResponse,
+  PortfolioRequest,
+  PortfolioResponse,
   StrategiesResponse,
 } from "../types/api";
 
@@ -54,8 +58,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<HealthResponse>("/health"),
   strategies: () => request<StrategiesResponse>("/strategies"),
+  datasets: () => request<DatasetsResponse>("/datasets"),
+  dataset: (name: string) =>
+    request<DatasetCandlesResponse>(`/datasets/${encodeURIComponent(name)}`),
   backtest: (body: BacktestRequest) =>
     request<BacktestResponse>("/backtest", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  portfolio: (body: PortfolioRequest) =>
+    request<PortfolioResponse>("/portfolio", {
       method: "POST",
       body: JSON.stringify(body),
     }),

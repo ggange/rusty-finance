@@ -180,3 +180,157 @@ def test_win_rate_none_when_no_completed_sells():
     m = client.post("/backtest", json=hold_payload).json()["metrics"]
     # win_rate is None/null when there are no sells
     assert m.get("win_rate") is None or isinstance(m.get("win_rate"), float)
+
+
+# ---------------------------------------------------------------------------
+# Dataset catalog
+# ---------------------------------------------------------------------------
+
+def _seed_dataset_dir(tmp_path) -> str:
+    path = tmp_path / "AAPL.csv"
+    with open(path, "w", newline="") as f:
+        f.write("Date,Open,High,Low,Close,Volume\n")
+        for c in CANDLES:
+            f.write(f"{c['date']},{c['open']},{c['high']},{c['low']},{c['close']},{int(c['volume'])}\n")
+    return str(tmp_path)
+
+
+def test_datasets_returns_list():
+    body = client.get("/datasets").json()
+    assert "datasets" in body and isinstance(body["datasets"], list)
+
+
+def test_datasets_reads_configured_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    datasets = client.get("/datasets").json()["datasets"]
+    names = {d["name"] for d in datasets}
+    assert "AAPL.csv" in names
+    aapl = next(d for d in datasets if d["name"] == "AAPL.csv")
+    for field in ("name", "symbol", "rows", "start", "end"):
+        assert field in aapl
+    assert aapl["symbol"] == "AAPL"
+    assert aapl["rows"] == len(CANDLES)
+
+
+def test_datasets_missing_dir_returns_empty(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path / "does_not_exist"))
+    assert client.get("/datasets").json()["datasets"] == []
+
+
+def test_get_dataset_returns_candles(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    body = client.get("/datasets/AAPL.csv").json()
+    assert body["name"] == "AAPL.csv"
+    assert len(body["candles"]) == len(CANDLES)
+    assert set(body["candles"][0]) >= {"date", "open", "high", "low", "close", "volume"}
+
+
+def test_get_unknown_dataset_returns_404(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path))
+    assert client.get("/datasets/missing.csv").status_code == 404
+
+
+def test_get_dataset_path_traversal_blocked(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path))
+    # Encoded traversal should not escape the data dir.
+    resp = client.get("/datasets/..%2F..%2Fetc%2Fpasswd")
+    assert resp.status_code in (404, 422)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio — validation (no engine required)
+# ---------------------------------------------------------------------------
+
+INLINE_ASSET = {
+    "symbol": "A",
+    "weight": 0.5,
+    "source": {"kind": "inline", "candles": CANDLES},
+    "strategy": {"type": "ma_sma", "short_window": 3, "long_window": 5},
+}
+RSI_ASSET = {
+    "symbol": "B",
+    "weight": 0.5,
+    "source": {"kind": "inline", "candles": CANDLES},
+    "strategy": {"type": "rsi", "period": 7},
+}
+PORTFOLIO_PAYLOAD = {"assets": [INLINE_ASSET, RSI_ASSET], "initial_cash": 10_000.0}
+
+
+def test_portfolio_empty_assets_returns_422():
+    assert client.post("/portfolio", json={"assets": []}).status_code == 422
+
+
+def test_portfolio_bad_strategy_returns_422():
+    bad = {"assets": [{**INLINE_ASSET, "strategy": {"type": "ma_ema", "short_window": 10, "long_window": 5}}]}
+    assert client.post("/portfolio", json=bad).status_code == 422
+
+
+def test_portfolio_returns_503_when_engine_unavailable(monkeypatch):
+    monkeypatch.setattr(api.main, "_ENGINE_AVAILABLE", False)
+    resp = client.post("/portfolio", json=PORTFOLIO_PAYLOAD)
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Portfolio — engine-dependent
+# ---------------------------------------------------------------------------
+
+def test_portfolio_returns_aggregate_and_breakdown():
+    pytest.importorskip("backtesting_py")
+    resp = client.post("/portfolio", json=PORTFOLIO_PAYLOAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert all(k in body for k in ("equity_curve", "metrics", "benchmark", "assets"))
+    assert len(body["equity_curve"]) == len(CANDLES)
+    assert len(body["assets"]) == 2
+    a0 = body["assets"][0]
+    for field in ("symbol", "weight", "allocated_cash", "equity_curve", "trades", "metrics", "benchmark"):
+        assert field in a0, f"missing asset field: {field}"
+    # Equal weights → 5000 each.
+    assert abs(a0["allocated_cash"] - 5_000.0) < 1e-6
+
+
+def test_portfolio_weight_defaulting():
+    pytest.importorskip("backtesting_py")
+    payload = {
+        "assets": [
+            {"symbol": "A", "source": {"kind": "inline", "candles": CANDLES},
+             "strategy": {"type": "ma_sma", "short_window": 3, "long_window": 5}},
+            {"symbol": "B", "source": {"kind": "inline", "candles": CANDLES},
+             "strategy": {"type": "rsi", "period": 7}},
+        ],
+        "initial_cash": 10_000.0,
+    }
+    body = client.post("/portfolio", json=payload).json()
+    # No weights → equal split.
+    assert abs(body["assets"][0]["allocated_cash"] - 5_000.0) < 1e-6
+    assert abs(body["assets"][1]["allocated_cash"] - 5_000.0) < 1e-6
+
+
+def test_portfolio_dataset_source(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    payload = {
+        "assets": [{
+            "symbol": "AAPL",
+            "source": {"kind": "dataset", "name": "AAPL.csv"},
+            "strategy": {"type": "ma_sma", "short_window": 3, "long_window": 5},
+        }],
+        "initial_cash": 10_000.0,
+    }
+    resp = client.post("/portfolio", json=payload)
+    assert resp.status_code == 200
+    assert len(resp.json()["equity_curve"]) == len(CANDLES)
+
+
+def test_portfolio_unknown_dataset_returns_404(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path))
+    payload = {
+        "assets": [{
+            "symbol": "NOPE",
+            "source": {"kind": "dataset", "name": "missing.csv"},
+            "strategy": {"type": "rsi", "period": 7},
+        }],
+    }
+    assert client.post("/portfolio", json=payload).status_code == 404
