@@ -5,8 +5,10 @@ use backtesting::{
     data::{Candle, CSVDataSource, DataSource},
     engine::BacktestEngine,
     portfolio::{ExecutionCosts, Portfolio},
+    portfolio_backtest::{run_portfolio as run_portfolio_core, PortfolioAsset},
     strategy::ma::{MAType, MovingAverageCrossover},
     strategy::rsi::RSI,
+    strategy::Strategy,
 };
 
 // ─── Strategy registry ────────────────────────────────────────────────────────
@@ -20,6 +22,41 @@ enum StrategySpec {
     MaSma { short_window: usize, long_window: usize },
     MaWma { short_window: usize, long_window: usize },
     Rsi    { period: usize },
+}
+
+/// One asset in a portfolio request. Candles are always inline here — the
+/// Python layer resolves any named dataset to candles before calling in.
+#[derive(Deserialize)]
+struct AssetIn {
+    symbol: String,
+    #[serde(default)]
+    weight: Option<f64>,
+    strategy: StrategySpec,
+    candles: Vec<Candle>,
+}
+
+/// Build a boxed strategy from a spec, validating its parameters.
+fn build_strategy(spec: StrategySpec) -> PyResult<Box<dyn Strategy>> {
+    Ok(match spec {
+        StrategySpec::MaEma { short_window, long_window } => {
+            validate_ma_windows(short_window, long_window)?;
+            Box::new(MovingAverageCrossover::new(MAType::EMA, short_window, long_window))
+        }
+        StrategySpec::MaSma { short_window, long_window } => {
+            validate_ma_windows(short_window, long_window)?;
+            Box::new(MovingAverageCrossover::new(MAType::SMA, short_window, long_window))
+        }
+        StrategySpec::MaWma { short_window, long_window } => {
+            validate_ma_windows(short_window, long_window)?;
+            Box::new(MovingAverageCrossover::new(MAType::WMA, short_window, long_window))
+        }
+        StrategySpec::Rsi { period } => {
+            if period < 2 {
+                return Err(PyValueError::new_err("RSI period must be >= 2"));
+            }
+            Box::new(RSI::new(period))
+        }
+    })
 }
 
 // ─── Primary API ──────────────────────────────────────────────────────────────
@@ -43,30 +80,47 @@ fn run(
     let spec: StrategySpec = serde_json::from_str(strategy_json)
         .map_err(|e| PyValueError::new_err(format!("invalid strategy JSON: {e}")))?;
     let candles = parse_candles(candles_json)?;
+    let strategy = build_strategy(spec)?;
+    dispatch(strategy, initial_cash, commission, slippage_pct, &candles)
+}
 
-    match spec {
-        StrategySpec::MaEma { short_window, long_window } => {
-            validate_ma_windows(short_window, long_window)?;
-            dispatch(MovingAverageCrossover::new(MAType::EMA, short_window, long_window),
-                initial_cash, commission, slippage_pct, &candles)
-        }
-        StrategySpec::MaSma { short_window, long_window } => {
-            validate_ma_windows(short_window, long_window)?;
-            dispatch(MovingAverageCrossover::new(MAType::SMA, short_window, long_window),
-                initial_cash, commission, slippage_pct, &candles)
-        }
-        StrategySpec::MaWma { short_window, long_window } => {
-            validate_ma_windows(short_window, long_window)?;
-            dispatch(MovingAverageCrossover::new(MAType::WMA, short_window, long_window),
-                initial_cash, commission, slippage_pct, &candles)
-        }
-        StrategySpec::Rsi { period } => {
-            if period < 2 {
-                return Err(PyValueError::new_err("RSI period must be >= 2"));
-            }
-            dispatch(RSI::new(period), initial_cash, commission, slippage_pct, &candles)
-        }
+/// Run a multi-asset portfolio backtest.
+///
+/// `portfolio_json` is a JSON array of assets, each:
+/// `{"symbol": "AAPL", "weight": 0.5, "strategy": {"type": "ma_ema", ...},
+///   "candles": [ ... ]}`. `weight` is optional (defaults to equal weighting).
+///
+/// Returns a JSON string with `equity_curve`, `metrics`, `benchmark`, and a
+/// per-asset `assets` breakdown.
+#[pyfunction]
+#[pyo3(signature = (portfolio_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0))]
+fn run_portfolio(
+    portfolio_json: &str,
+    initial_cash: f64,
+    commission: f64,
+    slippage_pct: f64,
+) -> PyResult<String> {
+    let specs: Vec<AssetIn> = serde_json::from_str(portfolio_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid portfolio JSON: {e}")))?;
+    if specs.is_empty() {
+        return Err(PyValueError::new_err("portfolio must contain at least one asset"));
     }
+
+    let mut assets: Vec<PortfolioAsset> = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let weight = spec.weight.unwrap_or(1.0);
+        let strategy = build_strategy(spec.strategy)?;
+        assets.push(PortfolioAsset {
+            symbol: spec.symbol,
+            weight,
+            candles: spec.candles,
+            strategy,
+        });
+    }
+
+    let costs = ExecutionCosts { commission_per_trade: commission, slippage_pct };
+    let result = run_portfolio_core(assets, initial_cash, costs);
+    to_json(result)
 }
 
 // ─── Convenience CSV functions (used by the CLI binary) ──────────────────────
@@ -155,6 +209,7 @@ fn to_json<T: serde::Serialize>(v: T) -> PyResult<String> {
 #[pymodule]
 fn backtesting_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(run_portfolio, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma, m)?)?;
     m.add_function(wrap_pyfunction!(run_rsi, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma_csv, m)?)?;

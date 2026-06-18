@@ -5,6 +5,8 @@ use backtesting::portfolio::Portfolio;
 use backtesting::strategy::{Signal, Strategy};
 use backtesting::strategy::ma::{MAType, MovingAverageCrossover};
 use backtesting::strategy::rsi::RSI;
+use backtesting::portfolio::ExecutionCosts;
+use backtesting::portfolio_backtest::{run_portfolio, PortfolioAsset};
 use backtesting::data::Candle;
 use chrono::NaiveDate;
 
@@ -142,6 +144,41 @@ fn sma_crossover_buy_precedes_sell() {
         assert_eq!(trades[1].action, Signal::Sell, "second trade should be a Sell");
         assert!(trades[0].date < trades[1].date, "Buy must precede Sell");
     }
+}
+
+#[test]
+fn portfolio_of_two_assets_aggregates_curve_and_breakdown() {
+    let candles = load_fixture("synthetic_30.csv");
+    let assets = vec![
+        PortfolioAsset {
+            symbol: "MA".to_string(),
+            weight: 1.0,
+            candles: candles.clone(),
+            strategy: Box::new(MovingAverageCrossover::new(MAType::SMA, 3, 5)),
+        },
+        PortfolioAsset {
+            symbol: "RSI".to_string(),
+            weight: 1.0,
+            candles: candles.clone(),
+            strategy: Box::new(RSI::new(7)),
+        },
+    ];
+    let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+
+    // Both assets share the same 30 fixture dates → aggregate curve has 30 points.
+    assert_eq!(res.equity_curve.len(), 30);
+    assert_eq!(res.assets.len(), 2);
+    // Equal weight splits the 10k capital evenly.
+    assert!((res.assets[0].allocated_cash - 5_000.0).abs() < 1e-9);
+    assert!((res.assets[1].allocated_cash - 5_000.0).abs() < 1e-9);
+    // Portfolio metrics must be finite.
+    assert!(res.metrics.total_return.is_finite());
+    assert!(res.metrics.max_drawdown.is_finite());
+    assert!(res.benchmark.total_return.is_finite());
+    // Aggregate NAV at the final date equals the sum of per-asset final NAVs.
+    let agg_last = res.equity_curve.last().unwrap().nav;
+    let sum_last: f64 = res.assets.iter().map(|a| a.result.equity_curve.last().unwrap().nav).sum();
+    assert!((agg_last - sum_last).abs() < 1e-6);
 }
 
 #[test]

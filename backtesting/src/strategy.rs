@@ -14,6 +14,15 @@ pub trait Strategy {
     fn on_bar(&mut self, candle: &Candle) -> Signal;
 }
 
+/// Let a boxed trait object satisfy [`Strategy`] itself, so heterogeneous
+/// strategies (e.g. an MA crossover and an RSI) can be stored together as
+/// `Box<dyn Strategy>` and still drive a generic [`crate::engine::BacktestEngine`].
+impl Strategy for Box<dyn Strategy> {
+    fn on_bar(&mut self, candle: &Candle) -> Signal {
+        (**self).on_bar(candle)
+    }
+}
+
 /// The action a strategy recommends for the current bar.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Signal {

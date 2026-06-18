@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { ConfigPanel } from "./components/config/ConfigPanel";
-import { ResultsPanel } from "./components/results/ResultsPanel";
+import { PortfolioResultsPanel } from "./components/results/PortfolioResultsPanel";
+import type { RanAsset } from "./components/results/PortfolioResultsPanel";
 import { useStrategies } from "./hooks/useStrategies";
-import { useBacktest } from "./hooks/useBacktest";
-import { useBacktestForm } from "./state/useBacktestForm";
-import type { Candle } from "./types/api";
+import { useDatasets } from "./hooks/useDatasets";
+import { usePortfolio } from "./hooks/usePortfolio";
+import { usePortfolioForm } from "./state/usePortfolioForm";
 
 function HealthBadge({
   engine,
@@ -32,22 +33,26 @@ function HealthBadge({
 
 export default function App() {
   const { strategies, health, loading, error: loadError } = useStrategies();
-  const form = useBacktestForm(strategies);
-  const { result, status, error, run } = useBacktest();
+  const { datasets } = useDatasets();
+  const form = usePortfolioForm(strategies);
+  const { result, status, error, run } = usePortfolio();
 
-  // Snapshot the data the run used, so charts stay consistent with the result
-  // even if the user edits the form afterward.
-  const [ranWith, setRanWith] = useState<{
-    candles: Candle[];
-    initialCash: number;
-  }>({ candles: [], initialCash: 10_000 });
+  // Snapshot the candles each asset ran with, so per-asset charts stay
+  // consistent with the result even if the form is edited afterward. The filter
+  // here mirrors buildRequest(), so the order matches result.assets.
+  const [ranAssets, setRanAssets] = useState<RanAsset[]>([]);
 
   const engineAvailable = health?.engine === "available";
 
   function handleRun() {
     const req = form.buildRequest();
     if (!req) return;
-    setRanWith({ candles: req.candles, initialCash: req.initial_cash });
+    const ready = form.assets.filter(
+      (a) => a.source.kind !== "none" && a.candles.length > 0,
+    );
+    setRanAssets(
+      ready.map((a) => ({ symbol: a.symbol || "ASSET", candles: a.candles })),
+    );
     void run(req);
   }
 
@@ -58,7 +63,7 @@ export default function App() {
           <div>
             <h1 className="text-lg font-semibold">Rusty Finance · Backtester</h1>
             <p className="text-xs text-slate-500">
-              Strategy backtesting on a native Rust engine
+              Multi-asset portfolio backtesting on a native Rust engine
             </p>
           </div>
           <HealthBadge engine={health ? health.engine : null} />
@@ -74,20 +79,20 @@ export default function App() {
         ) : loading ? (
           <p className="text-slate-400">Loading strategies…</p>
         ) : (
-          <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
+          <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
             <ConfigPanel
               strategies={strategies}
+              datasets={datasets}
               form={form}
               onRun={handleRun}
               running={status === "loading"}
               engineAvailable={!!engineAvailable}
             />
-            <ResultsPanel
+            <PortfolioResultsPanel
               status={status}
               error={error}
               result={result}
-              candles={ranWith.candles}
-              initialCash={ranWith.initialCash}
+              ranAssets={ranAssets}
             />
           </div>
         )}
