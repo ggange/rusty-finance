@@ -9,3 +9,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["httpx", "pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+pythonpath = [".."]
