@@ -20,9 +20,31 @@ By default the API reads `<repo>/data/datasets`. Point it elsewhere with:
 export RUSTY_FINANCE_DATA_DIR=/path/to/my/csvs
 ```
 
-## Seed data
+## Included datasets
 
-`AAPL.csv`, `MSFT.csv`, and `GOOG.csv` are synthetic 30-bar series with
-deliberately different shapes (trend, oscillation, rally-then-fade) so a
-multi-asset portfolio shows meaningful diversification. Replace them with real
-data whenever you like — just drop in more CSVs.
+`AAPL.csv`, `MSFT.csv`, `GOOG.csv`, `SPY.csv`, and `NVDA.csv` are real adjusted
+OHLCV data fetched from Yahoo Finance (2020-01-01 → 2024-12-31, ~1260 bars each).
+Prices are dividend/split-adjusted so returns are honest.
+
+## Fetching more data
+
+Use the included fetcher script to add any ticker:
+
+```bash
+# One ticker
+make fetch TICKER=TSLA
+
+# Custom date range
+make fetch TICKER=AMZN START=2015-01-01 END=2024-12-31
+
+# Refresh all bundled datasets
+make fetch-all
+```
+
+Or directly:
+
+```bash
+python scripts/fetch_data.py TSLA AMZN BRK-B --start 2018-01-01 --end 2024-12-31
+```
+
+New CSVs appear in the dataset picker immediately without restarting the API.
