@@ -8,7 +8,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["httpx", "pytest", "pytest-asyncio"]
+dev = ["httpx", "pytest", "pytest-asyncio", "yfinance>=0.2.40"]
 
 [tool.pytest.ini_options]
 pythonpath = [".."]
