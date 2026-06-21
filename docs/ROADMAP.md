@@ -3,30 +3,35 @@
 A living document for the long run. The short-run, actively-worked plan lives in
 issues / the current working session; this file is the map, not the turn-by-turn.
 
-Last updated: 2026-06-18
+Last updated: 2026-06-21
 
 ---
 
 ## Where we are today
 
-A working vertical slice, end to end:
+A fully real-data, multi-strategy backtesting stack, end to end:
 
 - **Rust core** (`backtesting/`) — event-driven `BacktestEngine`, a `Portfolio`
   with cash/share accounting, execution costs and sizing rules, a `Strategy`
   trait, and an 8-metric analytics layer (total return, CAGR, vol, max drawdown,
   Sharpe, Sortino, win rate, trade count). Multi-asset orchestration
   (`portfolio_backtest.rs`) aggregates per-asset runs into one portfolio result.
-- **Strategies** — two families: moving-average crossover (SMA/EMA/WMA) and RSI.
+- **Strategies** — four families: moving-average crossover (SMA/EMA/WMA), RSI,
+  MACD (EMA-seeded crossover), and Bollinger Bands (population std-dev bands).
 - **Bindings** (`backtesting-py/`) — PyO3 surface: `run`, `run_portfolio`, CSV helpers.
 - **API** (`api/`) — FastAPI: `/health`, `/strategies`, `/backtest`, `/datasets`,
-  `/datasets/{name}`, `/portfolio`.
+  `/datasets/{name}`, `/portfolio`, `/runs`, `/runs/{id}`.
 - **Frontend** (`frontend/`) — React 18 + Vite 8, multi-asset portfolio form,
-  results dashboard (equity/drawdown/price charts, per-asset drill-down).
-- **Data** — synthetic CSVs loaded from disk (`CSVDataSource`); no live feed.
+  results dashboard (equity/drawdown/price charts, per-asset drill-down), run
+  history panel (click to restore any past result).
+- **Data** — real OHLCV for AAPL, MSFT, GOOG, SPY, NVDA (2020-2024, yfinance,
+  split/dividend-adjusted). Synthetic fixtures for tests. `make fetch` for new tickers.
+- **Persistence** — every backtest and portfolio run saved to SQLite (`data/runs.db`).
+- **Dev tooling** — `make dev` / `make test` / `make bindings`, one-command startup
+  with health gate, GitHub Actions CI (cargo test + pytest + npm build).
 
-What this is **not** yet: it backtests buy-and-hold-of-allocation portfolios on
-synthetic data, with no rebalancing, no real prices, no run persistence, no
-parameter search, and no deployment story.
+What this is **not** yet: no rebalancing (static allocation only), no parameter
+search, no cross-asset signals, no deployment story.
 
 ---
 
@@ -45,23 +50,24 @@ parameter search, and no deployment story.
 
 ---
 
-## Horizon 1 — "Make it real" (next few sessions)
+## Horizon 1 — "Make it real" ✅ COMPLETE
 
 The goal: go from a synthetic-data demo to something you'd actually point at a
 real ticker and trust the numbers.
 
-- **Developer experience.** One-command startup that can't hit the
-  venv/maturin/uvicorn footgun. A `Makefile` (or `justfile`) with `make dev`,
-  `make test`, `make bindings`; a `scripts/dev.sh` that activates `.venv`,
-  rebuilds bindings, and launches API + Vite together with a health gate. CI
-  (GitHub Actions) running `cargo test`, `pytest`, and `npm run build`.
-- **Real market data.** A fetcher (yfinance / Stooq / Alpha Vantage) that
-  populates `data/datasets/` with real OHLCV, plus dividend/split adjustment so
-  returns are honest. Keep the on-disk CSV catalog contract intact.
-- **Strategy breadth #1.** MACD and Bollinger Bands — both reuse the existing
-  indicator scaffolding and exercise the strategy/param/validator path end to end.
-- **Run persistence (minimal).** Save a backtest/portfolio run (config + result)
-  to disk or SQLite; list and re-open past runs from the UI. Unblocks comparison.
+- ✅ **Developer experience.** `make dev` / `make test` / `make bindings`,
+  `scripts/dev.sh` with health gate, GitHub Actions CI (cargo test + pytest +
+  npm build). Committed `27d7efd`.
+- ✅ **Real market data.** yfinance fetcher with split/dividend adjustment
+  (`scripts/fetch_data.py`); 1257 bars each for AAPL, MSFT, GOOG, SPY, NVDA
+  (2020-2024) in `data/datasets/`. `make fetch TICKER=X`. Committed `3d1daa4`.
+- ✅ **Strategy breadth #1.** MACD (EMA-seeded crossover) and Bollinger Bands
+  (population std-dev with `in_position` guard) — full Rust→PyO3→API→frontend
+  pipeline, TDD throughout. Committed `a7fb138`.
+- ✅ **Run persistence.** SQLite via `aiosqlite`; every `/backtest` and
+  `/portfolio` call saves config + result and returns `run_id`. `GET /runs` +
+  `GET /runs/{id}`. Frontend `RunHistoryPanel` with click-to-restore. Committed
+  `3758b2a`.
 
 ## Horizon 2 — "Make it sharp" (the research workflow)
 
