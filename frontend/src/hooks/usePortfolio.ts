@@ -9,6 +9,7 @@ interface UsePortfolio {
   status: PortfolioStatus;
   error: string | null;
   run: (req: PortfolioRequest) => Promise<void>;
+  restore: (res: PortfolioResponse) => void;
 }
 
 /** Imperative POST /portfolio with request-status tracking. */
@@ -30,5 +31,11 @@ export function usePortfolio(): UsePortfolio {
     }
   }, []);
 
-  return { result, status, error, run };
+  const restore = useCallback((res: PortfolioResponse) => {
+    setResult(res);
+    setStatus("success");
+    setError(null);
+  }, []);
+
+  return { result, status, error, run, restore };
 }

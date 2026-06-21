@@ -1,11 +1,14 @@
 import csv
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
+
+import api.db as db
 
 try:
     import backtesting_py as bt
@@ -13,10 +16,17 @@ try:
 except ImportError:
     _ENGINE_AVAILABLE = False
 
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    await db.init_db()
+    yield
+
+
 app = FastAPI(
     title="Rusty Finance API",
     version="0.3.0",
     description="Backtesting engine powered by a native Rust core.",
+    lifespan=lifespan,
 )
 
 
@@ -329,7 +339,7 @@ def list_strategies():
 
 
 @app.post("/backtest")
-def backtest(req: BacktestRequest):
+async def backtest(req: BacktestRequest):
     """Run a backtest for any registered strategy.
 
     The `strategy.type` discriminator selects the strategy; remaining fields
@@ -343,7 +353,10 @@ def backtest(req: BacktestRequest):
         req.commission,
         req.slippage_pct,
     )
-    return json.loads(raw)
+    result = json.loads(raw)
+    run_id = await db.save_run("backtest", req.model_dump(mode="json"), result)
+    result["run_id"] = run_id
+    return result
 
 
 @app.get("/datasets")
@@ -367,7 +380,7 @@ def get_dataset(name: str):
 
 
 @app.post("/portfolio")
-def portfolio(req: PortfolioRequest):
+async def portfolio(req: PortfolioRequest):
     """Run a multi-asset portfolio backtest.
 
     Capital is split across assets by (normalized) weight; each asset runs its
@@ -381,4 +394,22 @@ def portfolio(req: PortfolioRequest):
         req.commission,
         req.slippage_pct,
     )
-    return json.loads(raw)
+    result = json.loads(raw)
+    run_id = await db.save_run("portfolio", req.model_dump(mode="json"), result)
+    result["run_id"] = run_id
+    return result
+
+
+@app.get("/runs")
+async def list_runs(limit: int = 50):
+    """List recent backtest and portfolio runs, most recent first."""
+    return {"runs": await db.list_runs(limit)}
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: int):
+    """Retrieve the full config and result for a saved run."""
+    run = await db.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
