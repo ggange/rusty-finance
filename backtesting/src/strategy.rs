@@ -1,5 +1,7 @@
 pub mod rsi;
 pub mod ma;
+pub mod macd;
+pub mod bollinger_bands;
 
 use std::collections::VecDeque;
 use serde::Serialize;

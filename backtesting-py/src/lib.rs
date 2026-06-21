@@ -8,6 +8,8 @@ use backtesting::{
     portfolio_backtest::{run_portfolio as run_portfolio_core, PortfolioAsset},
     strategy::ma::{MAType, MovingAverageCrossover},
     strategy::rsi::RSI,
+    strategy::macd::MACD,
+    strategy::bollinger_bands::BollingerBands as BBands,
     strategy::Strategy,
 };
 
@@ -22,6 +24,8 @@ enum StrategySpec {
     MaSma { short_window: usize, long_window: usize },
     MaWma { short_window: usize, long_window: usize },
     Rsi    { period: usize },
+    Macd   { fast_period: usize, slow_period: usize, signal_period: usize },
+    BollingerBands { period: usize, std_dev_mult: f64 },
 }
 
 /// One asset in a portfolio request. Candles are always inline here — the
@@ -55,6 +59,26 @@ fn build_strategy(spec: StrategySpec) -> PyResult<Box<dyn Strategy>> {
                 return Err(PyValueError::new_err("RSI period must be >= 2"));
             }
             Box::new(RSI::new(period))
+        }
+        StrategySpec::Macd { fast_period, slow_period, signal_period } => {
+            if fast_period < 2 || slow_period < 2 || signal_period < 2 {
+                return Err(PyValueError::new_err("MACD periods must be >= 2"));
+            }
+            if fast_period >= slow_period {
+                return Err(PyValueError::new_err(
+                    format!("fast_period ({fast_period}) must be < slow_period ({slow_period})")
+                ));
+            }
+            Box::new(MACD::new(fast_period, slow_period, signal_period))
+        }
+        StrategySpec::BollingerBands { period, std_dev_mult } => {
+            if period < 2 {
+                return Err(PyValueError::new_err("Bollinger Bands period must be >= 2"));
+            }
+            if std_dev_mult <= 0.0 {
+                return Err(PyValueError::new_err("std_dev_mult must be > 0"));
+            }
+            Box::new(BBands::new(period, std_dev_mult))
         }
     })
 }

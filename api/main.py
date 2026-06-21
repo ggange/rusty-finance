@@ -74,8 +74,27 @@ class RSIParams(BaseModel):
     period: int = Field(default=14, gt=1, description="RSI look-back period (bars)")
 
 
+class MACDParams(BaseModel):
+    type: Literal["macd"] = "macd"
+    fast_period: int = Field(default=12, ge=2, description="Fast EMA period (bars)")
+    slow_period: int = Field(default=26, ge=3, description="Slow EMA period (bars)")
+    signal_period: int = Field(default=9, ge=2, description="Signal line EMA period (bars)")
+
+    @model_validator(mode="after")
+    def periods_ordered(self) -> "MACDParams":
+        if self.fast_period >= self.slow_period:
+            raise ValueError("fast_period must be less than slow_period")
+        return self
+
+
+class BollingerBandsParams(BaseModel):
+    type: Literal["bollinger_bands"] = "bollinger_bands"
+    period: int = Field(default=20, ge=2, description="Lookback period (bars)")
+    std_dev_mult: float = Field(default=2.0, ge=0.5, le=5.0, description="Band width in standard deviations")
+
+
 StrategyParams = Annotated[
-    Union[MAEmaParams, MASmaParams, MAWmaParams, RSIParams],
+    Union[MAEmaParams, MASmaParams, MAWmaParams, RSIParams, MACDParams, BollingerBandsParams],
     Field(discriminator="type"),
 ]
 
@@ -160,6 +179,25 @@ _REGISTRY = [
         "description": "Buy when RSI < 30 (oversold); sell when RSI > 70 (overbought).",
         "params": [
             {"name": "period", "type": "integer", "default": 14, "min": 2, "description": "Look-back period (bars)"},
+        ],
+    },
+    {
+        "type": "macd",
+        "name": "MACD",
+        "description": "Buy when MACD line crosses above signal line; sell on cross below.",
+        "params": [
+            {"name": "fast_period",   "type": "integer", "default": 12, "min": 2, "description": "Fast EMA period (bars)"},
+            {"name": "slow_period",   "type": "integer", "default": 26, "min": 3, "description": "Slow EMA period (bars)"},
+            {"name": "signal_period", "type": "integer", "default": 9,  "min": 2, "description": "Signal line period (bars)"},
+        ],
+    },
+    {
+        "type": "bollinger_bands",
+        "name": "Bollinger Bands",
+        "description": "Buy when price closes below lower band; sell when it closes above upper band.",
+        "params": [
+            {"name": "period",       "type": "integer", "default": 20,  "min": 2,   "description": "Lookback period (bars)"},
+            {"name": "std_dev_mult", "type": "number",  "default": 2.0, "min": 0.5, "step": 0.5, "description": "Band width (σ)"},
         ],
     },
 ]
