@@ -7,6 +7,8 @@ import type {
   HealthResponse,
   PortfolioRequest,
   PortfolioResponse,
+  RunDetail,
+  RunsResponse,
   StrategiesResponse,
 } from "../types/api";
 
@@ -71,4 +73,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  runs: (limit = 50) => request<RunsResponse>(`/runs?limit=${limit}`),
+  run: (id: number) => request<RunDetail>(`/runs/${id}`),
 };

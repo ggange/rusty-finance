@@ -114,6 +114,7 @@ export interface BacktestResponse {
   trades: Trade[];
   metrics: Metrics;
   benchmark: Benchmark;
+  run_id?: number;
 }
 
 // ─── /datasets (server-side catalog) ────────────────────────────────────────
@@ -166,6 +167,23 @@ export interface PortfolioResponse {
   metrics: Metrics;
   benchmark: Benchmark;
   assets: AssetResult[];
+  run_id?: number;
+}
+
+// ─── /runs ──────────────────────────────────────────────────────────────────
+export interface RunListItem {
+  id: number;
+  created_at: string;
+  kind: "backtest" | "portfolio";
+  config: BacktestRequest | PortfolioRequest;
+}
+
+export interface RunDetail extends RunListItem {
+  result: BacktestResponse | PortfolioResponse;
+}
+
+export interface RunsResponse {
+  runs: RunListItem[];
 }
 
 // FastAPI error envelope (422 has a detail array; 503 has a detail string).

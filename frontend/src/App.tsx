@@ -2,10 +2,13 @@ import { useState } from "react";
 import { ConfigPanel } from "./components/config/ConfigPanel";
 import { PortfolioResultsPanel } from "./components/results/PortfolioResultsPanel";
 import type { RanAsset } from "./components/results/PortfolioResultsPanel";
+import { RunHistoryPanel } from "./components/history/RunHistoryPanel";
 import { useStrategies } from "./hooks/useStrategies";
 import { useDatasets } from "./hooks/useDatasets";
 import { usePortfolio } from "./hooks/usePortfolio";
+import { useRunHistory } from "./hooks/useRunHistory";
 import { usePortfolioForm } from "./state/usePortfolioForm";
+import type { PortfolioResponse, RunDetail } from "./types/api";
 
 function HealthBadge({
   engine,
@@ -35,7 +38,8 @@ export default function App() {
   const { strategies, health, loading, error: loadError } = useStrategies();
   const { datasets } = useDatasets();
   const form = usePortfolioForm(strategies);
-  const { result, status, error, run } = usePortfolio();
+  const { result, status, error, run, restore } = usePortfolio();
+  const history = useRunHistory();
 
   // Snapshot the candles each asset ran with, so per-asset charts stay
   // consistent with the result even if the form is edited afterward. The filter
@@ -53,7 +57,14 @@ export default function App() {
     setRanAssets(
       ready.map((a) => ({ symbol: a.symbol || "ASSET", candles: a.candles })),
     );
-    void run(req);
+    void run(req).then(() => history.refresh());
+  }
+
+  function handleLoadRun(detail: RunDetail) {
+    if (detail.kind === "portfolio") {
+      restore(detail.result as PortfolioResponse);
+      setRanAssets([]);
+    }
   }
 
   return (
@@ -79,7 +90,7 @@ export default function App() {
         ) : loading ? (
           <p className="text-slate-400">Loading strategies…</p>
         ) : (
-          <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
+          <div className="grid gap-6 lg:grid-cols-[380px_1fr_200px]">
             <ConfigPanel
               strategies={strategies}
               datasets={datasets}
@@ -94,6 +105,7 @@ export default function App() {
               result={result}
               ranAssets={ranAssets}
             />
+            <RunHistoryPanel history={history} onLoad={handleLoadRun} />
           </div>
         )}
       </main>
