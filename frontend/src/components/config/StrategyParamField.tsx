@@ -25,9 +25,12 @@ export function StrategyParamField({
         id={meta.name}
         type="number"
         min={meta.min}
-        step={1}
+        step={meta.step ?? (meta.type === "number" ? 0.5 : 1)}
         value={Number.isFinite(value) ? value : ""}
-        onChange={(e) => onChange(Math.trunc(Number(e.target.value)))}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          onChange(meta.type === "number" ? v : Math.trunc(v));
+        }}
         className="w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none"
       />
     </Field>

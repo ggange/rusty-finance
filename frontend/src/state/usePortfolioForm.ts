@@ -61,6 +61,13 @@ function buildStrategy(type: StrategyType, params: Record<string, number>): Stra
   if (type === "rsi") {
     return { type: "rsi", period: params.period };
   }
+  if (type === "macd") {
+    return { type: "macd", fast_period: params.fast_period,
+      slow_period: params.slow_period, signal_period: params.signal_period };
+  }
+  if (type === "bollinger_bands") {
+    return { type: "bollinger_bands", period: params.period, std_dev_mult: params.std_dev_mult };
+  }
   return { type, short_window: params.short_window, long_window: params.long_window };
 }
 

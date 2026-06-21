@@ -11,7 +11,7 @@ export interface Candle {
 }
 
 // ─── Strategy selection (request side) ──────────────────────────────────────
-export type StrategyType = "ma_ema" | "ma_sma" | "ma_wma" | "rsi";
+export type StrategyType = "ma_ema" | "ma_sma" | "ma_wma" | "rsi" | "macd" | "bollinger_bands";
 
 export interface MAStrategy {
   type: "ma_ema" | "ma_sma" | "ma_wma";
@@ -24,14 +24,28 @@ export interface RSIStrategy {
   period: number;
 }
 
-export type StrategyRequest = MAStrategy | RSIStrategy;
+export interface MACDStrategy {
+  type: "macd";
+  fast_period: number;
+  slow_period: number;
+  signal_period: number;
+}
+
+export interface BollingerBandsStrategy {
+  type: "bollinger_bands";
+  period: number;
+  std_dev_mult: number;
+}
+
+export type StrategyRequest = MAStrategy | RSIStrategy | MACDStrategy | BollingerBandsStrategy;
 
 // ─── /strategies registry (metadata, response side) ─────────────────────────
 export interface StrategyParamMeta {
-  name: string; // "short_window" | "long_window" | "period"
-  type: "integer";
+  name: string;
+  type: "integer" | "number";
   default: number;
   min: number;
+  step?: number;
   description?: string;
 }
 

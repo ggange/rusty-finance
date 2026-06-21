@@ -62,7 +62,7 @@ def test_strategies_lists_all_types():
     resp = client.get("/strategies")
     assert resp.status_code == 200
     types = {s["type"] for s in resp.json()["strategies"]}
-    assert types == {"ma_ema", "ma_sma", "ma_wma", "rsi"}
+    assert types == {"ma_ema", "ma_sma", "ma_wma", "rsi", "macd", "bollinger_bands"}
 
 
 def test_strategies_each_entry_has_required_fields():
@@ -334,3 +334,42 @@ def test_portfolio_unknown_dataset_returns_404(monkeypatch, tmp_path):
         }],
     }
     assert client.post("/portfolio", json=payload).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# New strategy tests — MACD and Bollinger Bands
+# ---------------------------------------------------------------------------
+
+MACD_PAYLOAD = {
+    "strategy": {"type": "macd", "fast_period": 3, "slow_period": 5, "signal_period": 3},
+    "candles": CANDLES,
+}
+
+BB_PAYLOAD = {
+    "strategy": {"type": "bollinger_bands", "period": 5, "std_dev_mult": 1.0},
+    "candles": CANDLES,
+}
+
+
+def test_macd_returns_full_result_shape():
+    pytest.importorskip("backtesting_py")
+    resp = client.post("/backtest", json=MACD_PAYLOAD)
+    assert resp.status_code == 200
+    assert all(k in resp.json() for k in ("equity_curve", "trades", "metrics", "benchmark"))
+
+
+def test_bollinger_bands_returns_full_result_shape():
+    pytest.importorskip("backtesting_py")
+    resp = client.post("/backtest", json=BB_PAYLOAD)
+    assert resp.status_code == 200
+    assert all(k in resp.json() for k in ("equity_curve", "trades", "metrics", "benchmark"))
+
+
+def test_macd_fast_gte_slow_returns_422():
+    bad = {**MACD_PAYLOAD, "strategy": {"type": "macd", "fast_period": 10, "slow_period": 5, "signal_period": 3}}
+    assert client.post("/backtest", json=bad).status_code == 422
+
+
+def test_bollinger_bands_bad_std_dev_returns_422():
+    bad = {**BB_PAYLOAD, "strategy": {"type": "bollinger_bands", "period": 20, "std_dev_mult": 0.3}}
+    assert client.post("/backtest", json=bad).status_code == 422
