@@ -7,8 +7,8 @@
 
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
-use serde::Serialize;
+use chrono::{Datelike, NaiveDate};
+use serde::{Deserialize, Serialize};
 
 use crate::data::Candle;
 use crate::engine::{BacktestEngine, BacktestResult};
@@ -16,6 +16,24 @@ use crate::metrics::{Benchmark, Metrics};
 use crate::portfolio::{EquityPoint, ExecutionCosts, Portfolio, TradeRecord};
 use crate::risk::RiskMetrics;
 use crate::strategy::Strategy;
+
+/// How often the portfolio is rebalanced back to target weights.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RebalanceFrequency {
+    /// Rebalance on the first trading day of each calendar month.
+    Monthly,
+    /// Rebalance on the first trading day of each calendar quarter.
+    Quarterly,
+    /// Rebalance whenever any asset drifts more than `threshold` (e.g. 0.05 = 5 %) from its target weight.
+    Threshold { threshold: f64 },
+}
+
+/// Optional rebalancing overlay for a portfolio backtest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebalanceConfig {
+    pub frequency: RebalanceFrequency,
+}
 
 /// One asset to include in a portfolio backtest.
 pub struct PortfolioAsset {
@@ -53,6 +71,9 @@ pub struct PortfolioResult {
     pub risk: RiskMetrics,
     /// Per-asset breakdown.
     pub assets: Vec<AssetResult>,
+    /// Dates on which the portfolio was rebalanced (empty if no rebalancing configured).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rebalance_dates: Vec<NaiveDate>,
 }
 
 /// Normalize weights so they sum to 1. If every weight is zero (or negative
@@ -72,10 +93,15 @@ fn normalize_weights(weights: &[f64]) -> Vec<f64> {
 /// Run a multi-asset backtest. Capital is split across assets by normalized
 /// weight; each asset runs independently through the single-asset engine, and
 /// the per-asset NAV curves are summed (by date) into the portfolio curve.
+///
+/// If `rebalance` is `Some`, a NAV-overlay rebalancing is applied: on each
+/// designated date the portfolio is virtually sold and rebought at target weights,
+/// with execution costs deducted from the total portfolio value.
 pub fn run_portfolio(
     assets: Vec<PortfolioAsset>,
     initial_cash: f64,
     costs: ExecutionCosts,
+    rebalance: Option<RebalanceConfig>,
 ) -> PortfolioResult {
     let weights: Vec<f64> = assets.iter().map(|a| a.weight).collect();
     let normalized = normalize_weights(&weights);
@@ -94,15 +120,25 @@ pub fn run_portfolio(
         });
     }
 
-    let (equity_curve, metrics, benchmark, risk) = aggregate(&asset_results, initial_cash);
-    PortfolioResult { equity_curve, metrics, benchmark, risk, assets: asset_results }
+    let (equity_curve, metrics, benchmark, risk, rebalance_dates) =
+        aggregate(&asset_results, initial_cash, rebalance.as_ref(), &costs);
+    PortfolioResult { equity_curve, metrics, benchmark, risk, assets: asset_results, rebalance_dates }
 }
 
 /// Build the portfolio equity curve, metrics, benchmark, and risk analytics from
 /// the per-asset results. Sums each asset's as-of NAV across the union of all dates
 /// (forward-filling each asset's last known NAV; before an asset's first bar it
 /// contributes its allocated cash).
-fn aggregate(assets: &[AssetResult], initial_cash: f64) -> (Vec<EquityPoint>, Metrics, Benchmark, RiskMetrics) {
+///
+/// If `rebalance` is `Some`, applies a NAV-overlay: on each rebalance date, the
+/// aggregate NAV is virtually reallocated to target weights, with execution costs
+/// deducted from the total.
+fn aggregate(
+    assets: &[AssetResult],
+    initial_cash: f64,
+    rebalance: Option<&RebalanceConfig>,
+    costs: &ExecutionCosts,
+) -> (Vec<EquityPoint>, Metrics, Benchmark, RiskMetrics, Vec<NaiveDate>) {
     // Union of every date that appears in any asset's curve, sorted.
     let mut dates: BTreeMap<NaiveDate, ()> = BTreeMap::new();
     for a in assets {
@@ -111,23 +147,85 @@ fn aggregate(assets: &[AssetResult], initial_cash: f64) -> (Vec<EquityPoint>, Me
         }
     }
 
+    // Per-asset NAV adjustment multipliers: updated on each rebalance event.
+    // multiplier[i] accumulates the scaling applied by all rebalances so far.
+    let mut multipliers: Vec<f64> = vec![1.0; assets.len()];
+    let mut rebalance_dates: Vec<NaiveDate> = Vec::new();
+    let mut prev_date: Option<NaiveDate> = None;
+
     let mut equity_curve: Vec<EquityPoint> = Vec::with_capacity(dates.len());
     for &date in dates.keys() {
-        let mut nav = 0.0;
-        for a in assets {
-            nav += asof_nav(&a.result.equity_curve, date, a.allocated_cash);
+        // Compute each asset's adjusted NAV at this date.
+        let adj_navs: Vec<f64> = assets
+            .iter()
+            .enumerate()
+            .map(|(i, a)| asof_nav(&a.result.equity_curve, date, a.allocated_cash) * multipliers[i])
+            .collect();
+        let total: f64 = adj_navs.iter().sum();
+
+        // Check whether a rebalance should fire on this date.
+        if let (Some(cfg), Some(prev)) = (rebalance, prev_date) {
+            let fires = match &cfg.frequency {
+                RebalanceFrequency::Monthly => {
+                    date.month() != prev.month() || date.year() != prev.year()
+                }
+                RebalanceFrequency::Quarterly => {
+                    let q = |d: NaiveDate| (d.month() - 1) / 3;
+                    q(date) != q(prev) || date.year() != prev.year()
+                }
+                RebalanceFrequency::Threshold { threshold } => {
+                    if total > 0.0 {
+                        assets.iter().enumerate().any(|(i, a)| {
+                            let actual = adj_navs[i] / total;
+                            (actual - a.weight).abs() > *threshold
+                        })
+                    } else {
+                        false
+                    }
+                }
+            };
+
+            if fires && total > 0.0 {
+                // Execution cost: slippage on each leg + commission per asset traded.
+                let slippage_cost: f64 = assets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| (adj_navs[i] - total * a.weight).abs() * costs.slippage_pct)
+                    .sum();
+                let commission_cost = costs.commission_per_trade * assets.len() as f64;
+                let total_after_costs = (total - slippage_cost - commission_cost).max(0.0);
+
+                // Update multipliers: scale each asset so its new NAV equals target.
+                for (i, a) in assets.iter().enumerate() {
+                    let current_adj_nav = adj_navs[i];
+                    let target_nav = total_after_costs * a.weight;
+                    if current_adj_nav > 0.0 {
+                        multipliers[i] *= target_nav / current_adj_nav;
+                    }
+                }
+                rebalance_dates.push(date);
+            }
         }
+
+        // Recompute totals after any rebalance multiplier updates.
+        let nav: f64 = assets
+            .iter()
+            .enumerate()
+            .map(|(i, a)| asof_nav(&a.result.equity_curve, date, a.allocated_cash) * multipliers[i])
+            .sum();
         equity_curve.push(EquityPoint { date, nav });
+        prev_date = Some(date);
     }
 
     // Aligned per-asset daily return series for risk analytics.
     let dates_vec: Vec<NaiveDate> = dates.keys().copied().collect();
     let asset_returns: Vec<Vec<f64>> = assets
         .iter()
-        .map(|a| {
+        .enumerate()
+        .map(|(i, a)| {
             let navs: Vec<f64> = dates_vec
                 .iter()
-                .map(|&d| asof_nav(&a.result.equity_curve, d, a.allocated_cash))
+                .map(|&d| asof_nav(&a.result.equity_curve, d, a.allocated_cash) * multipliers[i])
                 .collect();
             navs.windows(2)
                 .map(|w| if w[0] != 0.0 { w[1] / w[0] - 1.0 } else { 0.0 })
@@ -157,7 +255,7 @@ fn aggregate(assets: &[AssetResult], initial_cash: f64) -> (Vec<EquityPoint>, Me
         Benchmark { total_return: 0.0, cagr: 0.0 }
     };
 
-    (equity_curve, metrics, benchmark, risk)
+    (equity_curve, metrics, benchmark, risk, rebalance_dates)
 }
 
 /// NAV of one asset as of `date`: the most recent equity point on or before
@@ -241,7 +339,7 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(vec![Signal::Hold, Signal::Hold])),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
         assert!((res.assets[0].allocated_cash - 5_000.0).abs() < 1e-9);
         assert!((res.assets[1].allocated_cash - 5_000.0).abs() < 1e-9);
     }
@@ -264,7 +362,7 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(vec![Signal::Hold, Signal::Hold])),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
         let last = res.equity_curve.last().unwrap().nav;
         assert!((last - 12_500.0).abs() < 1e-6, "last nav = {last}");
         // Aggregate must equal the sum of per-asset last NAVs.
@@ -294,7 +392,7 @@ mod tests {
                 Signal::Hold,
             ])),
         }];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
         assert!((res.metrics.total_return - direct.metrics.total_return).abs() < 1e-9);
         assert_eq!(res.equity_curve.len(), direct.equity_curve.len());
         assert!((res.equity_curve.last().unwrap().nav - direct.equity_curve.last().unwrap().nav).abs() < 1e-9);
@@ -316,14 +414,14 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(vec![Signal::Buy, Signal::Sell])),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
         // Each asset does 1 buy + 1 sell = 2 trades → 4 total.
         assert_eq!(res.metrics.trade_count, 4);
     }
 
     #[test]
     fn empty_assets_produce_empty_curve() {
-        let res = run_portfolio(Vec::new(), 10_000.0, ExecutionCosts::default());
+        let res = run_portfolio(Vec::new(), 10_000.0, ExecutionCosts::default(), None);
         assert!(res.equity_curve.is_empty());
         assert_eq!(res.metrics.trade_count, 0);
         assert!(res.assets.is_empty());
@@ -358,7 +456,7 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(sig_b)),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
 
         // Risk struct is 2×2.
         assert_eq!(res.risk.correlation.len(), 2);

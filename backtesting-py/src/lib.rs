@@ -7,7 +7,7 @@ use backtesting::{
     engine::BacktestEngine,
     metrics::Metrics,
     portfolio::{ExecutionCosts, Portfolio},
-    portfolio_backtest::{run_portfolio as run_portfolio_core, PortfolioAsset},
+    portfolio_backtest::{run_portfolio as run_portfolio_core, PortfolioAsset, RebalanceConfig},
     strategy::ma::{MAType, MovingAverageCrossover},
     strategy::rsi::RSI,
     strategy::macd::MACD,
@@ -39,6 +39,14 @@ struct AssetIn {
     weight: Option<f64>,
     strategy: StrategySpec,
     candles: Vec<Candle>,
+}
+
+/// Top-level portfolio request envelope sent from Python.
+#[derive(Deserialize)]
+struct PortfolioRequestIn {
+    assets: Vec<AssetIn>,
+    #[serde(default)]
+    rebalance: Option<RebalanceConfig>,
 }
 
 /// Build a boxed strategy from a spec, validating its parameters.
@@ -112,12 +120,13 @@ fn run(
 
 /// Run a multi-asset portfolio backtest.
 ///
-/// `portfolio_json` is a JSON array of assets, each:
-/// `{"symbol": "AAPL", "weight": 0.5, "strategy": {"type": "ma_ema", ...},
-///   "candles": [ ... ]}`. `weight` is optional (defaults to equal weighting).
+/// `portfolio_json` is a JSON object:
+/// `{"assets": [...], "rebalance": {"frequency": {"kind": "monthly"}}}`
+/// where each asset is `{"symbol": "AAPL", "weight": 0.5, "strategy": {...}, "candles": [...]}`.
+/// `weight` and `rebalance` are optional.
 ///
-/// Returns a JSON string with `equity_curve`, `metrics`, `benchmark`, and a
-/// per-asset `assets` breakdown.
+/// Returns a JSON string with `equity_curve`, `metrics`, `benchmark`, `risk`,
+/// per-asset `assets` breakdown, and optional `rebalance_dates`.
 #[pyfunction]
 #[pyo3(signature = (portfolio_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0))]
 fn run_portfolio(
@@ -126,14 +135,14 @@ fn run_portfolio(
     commission: f64,
     slippage_pct: f64,
 ) -> PyResult<String> {
-    let specs: Vec<AssetIn> = serde_json::from_str(portfolio_json)
+    let req: PortfolioRequestIn = serde_json::from_str(portfolio_json)
         .map_err(|e| PyValueError::new_err(format!("invalid portfolio JSON: {e}")))?;
-    if specs.is_empty() {
+    if req.assets.is_empty() {
         return Err(PyValueError::new_err("portfolio must contain at least one asset"));
     }
 
-    let mut assets: Vec<PortfolioAsset> = Vec::with_capacity(specs.len());
-    for spec in specs {
+    let mut assets: Vec<PortfolioAsset> = Vec::with_capacity(req.assets.len());
+    for spec in req.assets {
         let weight = spec.weight.unwrap_or(1.0);
         let strategy = build_strategy(spec.strategy)?;
         assets.push(PortfolioAsset {
@@ -145,7 +154,7 @@ fn run_portfolio(
     }
 
     let costs = ExecutionCosts { commission_per_trade: commission, slippage_pct };
-    let result = run_portfolio_core(assets, initial_cash, costs);
+    let result = run_portfolio_core(assets, initial_cash, costs, req.rebalance);
     to_json(result)
 }
 

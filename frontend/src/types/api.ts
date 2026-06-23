@@ -147,12 +147,22 @@ export interface PortfolioAssetRequest {
   strategy: StrategyRequest;
 }
 
+export type RebalanceFrequency =
+  | { kind: "monthly" }
+  | { kind: "quarterly" }
+  | { kind: "threshold"; threshold: number };
+
+export interface RebalanceConfig {
+  frequency: RebalanceFrequency;
+}
+
 export interface PortfolioRequest {
   assets: PortfolioAssetRequest[];
   initial_cash: number;
   commission: number;
   slippage_pct: number;
   benchmark_symbol?: string;
+  rebalance?: RebalanceConfig;
 }
 
 // ─── /portfolio response ────────────────────────────────────────────────────
@@ -189,6 +199,7 @@ export interface PortfolioResponse {
   risk: RiskMetrics;
   assets: AssetResult[];
   external_benchmark_curve?: EquityPoint[];
+  rebalance_dates?: string[];
   run_id?: number;
 }
 

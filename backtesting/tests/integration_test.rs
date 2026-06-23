@@ -163,7 +163,7 @@ fn portfolio_of_two_assets_aggregates_curve_and_breakdown() {
             strategy: Box::new(RSI::new(7)),
         },
     ];
-    let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+    let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
 
     // Both assets share the same 30 fixture dates → aggregate curve has 30 points.
     assert_eq!(res.equity_curve.len(), 30);

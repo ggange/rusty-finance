@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Candle,
   PortfolioRequest,
+  RebalanceConfig,
   StrategyMeta,
   StrategyRequest,
   StrategyType,
@@ -48,6 +49,10 @@ export interface PortfolioForm {
   benchmarkSymbol: string | null;
   setBenchmarkSymbol: (v: string | null) => void;
 
+  // Rebalancing
+  rebalanceConfig: RebalanceConfig | null;
+  setRebalanceConfig: (v: RebalanceConfig | null) => void;
+
   // Derived
   strategyMeta: (type: StrategyType) => StrategyMeta | undefined;
   buildRequest: () => PortfolioRequest | null;
@@ -86,6 +91,7 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
   const [commission, setCommission] = useState(0);
   const [slippagePct, setSlippagePct] = useState(0);
   const [benchmarkSymbol, setBenchmarkSymbol] = useState<string | null>(null);
+  const [rebalanceConfig, setRebalanceConfig] = useState<RebalanceConfig | null>(null);
   const idCounter = useRef(0);
 
   const strategyMeta = useCallback(
@@ -204,8 +210,9 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
       slippage_pct: slippagePct,
     };
     if (benchmarkSymbol) req.benchmark_symbol = benchmarkSymbol;
+    if (rebalanceConfig) req.rebalance = rebalanceConfig;
     return req;
-  }, [assets, initialCash, commission, slippagePct, benchmarkSymbol]);
+  }, [assets, initialCash, commission, slippagePct, benchmarkSymbol, rebalanceConfig]);
 
   const meta = useMemo(() => strategyMeta, [strategyMeta]);
 
@@ -226,6 +233,8 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
     setSlippagePct,
     benchmarkSymbol,
     setBenchmarkSymbol,
+    rebalanceConfig,
+    setRebalanceConfig,
     strategyMeta: meta,
     buildRequest,
   };

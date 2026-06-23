@@ -147,12 +147,36 @@ class AssetIn(BaseModel):
     strategy: StrategyParams
 
 
+class RebalanceFrequencyMonthly(BaseModel):
+    kind: Literal["monthly"] = "monthly"
+
+
+class RebalanceFrequencyQuarterly(BaseModel):
+    kind: Literal["quarterly"] = "quarterly"
+
+
+class RebalanceFrequencyThreshold(BaseModel):
+    kind: Literal["threshold"] = "threshold"
+    threshold: float = Field(gt=0, lt=1, description="Drift threshold as a fraction (e.g. 0.05 = 5 %)")
+
+
+RebalanceFrequency = Annotated[
+    Union[RebalanceFrequencyMonthly, RebalanceFrequencyQuarterly, RebalanceFrequencyThreshold],
+    Field(discriminator="kind"),
+]
+
+
+class RebalanceConfigIn(BaseModel):
+    frequency: RebalanceFrequency
+
+
 class PortfolioRequest(BaseModel):
     assets: list[AssetIn] = Field(min_length=1)
     initial_cash: float = Field(default=10_000.0, gt=0)
     commission: float = Field(default=0.0, ge=0)
     slippage_pct: float = Field(default=0.0, ge=0, lt=1)
     benchmark_symbol: Optional[str] = Field(default=None, description="Dataset name to use as external benchmark (e.g. 'SPY.csv')")
+    rebalance: Optional[RebalanceConfigIn] = Field(default=None, description="Optional periodic or threshold rebalancing")
 
 
 # ─── Strategy registry metadata (consumed by the UI) ─────────────────────────
@@ -321,7 +345,7 @@ def _compute_bah_curve(candles: list[dict], initial_cash: float) -> list[dict]:
 
 
 def _portfolio_json(req: PortfolioRequest) -> str:
-    """Assemble the JSON the Rust engine expects: assets with inline candles."""
+    """Assemble the JSON the Rust engine expects: top-level envelope with assets + optional rebalance."""
     assets = []
     for a in req.assets:
         entry = {
@@ -332,7 +356,10 @@ def _portfolio_json(req: PortfolioRequest) -> str:
         if a.weight is not None:
             entry["weight"] = a.weight
         assets.append(entry)
-    return json.dumps(assets)
+    envelope: dict = {"assets": assets}
+    if req.rebalance is not None:
+        envelope["rebalance"] = {"frequency": json.loads(req.rebalance.frequency.model_dump_json())}
+    return json.dumps(envelope)
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
