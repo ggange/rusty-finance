@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use backtesting::data::{CSVDataSource, DataSource};
-use backtesting::engine::BacktestEngine;
+use backtesting::engine::{BacktestEngine, FillTiming};
 use backtesting::portfolio::Portfolio;
 use backtesting::strategy::{Signal, Strategy};
 use backtesting::strategy::ma::{MAType, MovingAverageCrossover};
@@ -60,7 +60,7 @@ fn full_ma_backtest_on_fixture_produces_trades() {
     let candles = load_fixture("synthetic_30.csv");
     let strategy = MovingAverageCrossover::new(MAType::SMA, 3, 5);
     let portfolio = Portfolio::new(10_000.0, "SYNTH".to_string());
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::Close);
     engine.run(&candles);
     let result = engine.result();
 
@@ -73,7 +73,7 @@ fn full_rsi_backtest_on_fixture_produces_buy() {
     let candles = load_fixture("synthetic_30.csv");
     let strategy = RSI::new(7);
     let portfolio = Portfolio::new(10_000.0, "SYNTH".to_string());
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::Close);
     engine.run(&candles);
     let result = engine.result();
 
@@ -86,7 +86,7 @@ fn full_ma_backtest_metrics_are_finite() {
     let candles = load_fixture("synthetic_30.csv");
     let strategy = MovingAverageCrossover::new(MAType::SMA, 3, 5);
     let portfolio = Portfolio::new(10_000.0, "SYNTH".to_string());
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::Close);
     engine.run(&candles);
     let result = engine.result();
 
@@ -95,8 +95,9 @@ fn full_ma_backtest_metrics_are_finite() {
     assert!(result.metrics.sharpe_ratio.is_finite());
 }
 
+/// Legacy assertion: under Close timing, buy-and-hold fills at candles[0].close.
 #[test]
-fn buy_and_hold_baseline() {
+fn buy_and_hold_baseline_close_timing() {
     let candles = load_fixture("synthetic_30.csv");
     let buy_price = candles[0].close;  // 100.0
     let last_price = candles[candles.len() - 1].close;  // 100.0
@@ -106,7 +107,7 @@ fn buy_and_hold_baseline() {
 
     let strategy = BuyOnceStrategy::new();
     let portfolio = Portfolio::new(initial_cash, "SYNTH".to_string());
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::Close);
     engine.run(&candles);
     let result = engine.result();
 
@@ -115,12 +116,56 @@ fn buy_and_hold_baseline() {
     assert!(diff < 0.01, "buy-and-hold NAV {actual_nav:.2} differs from expected {expected_nav:.2} by {:.2}%", diff * 100.0);
 }
 
+/// Under NextOpen timing, buy-and-hold fills at candles[1].open, not candles[0].close.
+#[test]
+fn buy_and_hold_baseline_next_open_timing() {
+    let candles = load_fixture("synthetic_30.csv");
+    // Fill happens at candles[1].open (bar 1 opens after bar 0's signal).
+    let buy_price = candles[1].open;
+    let last_price = candles[candles.len() - 1].close;
+    let initial_cash = 10_000.0_f64;
+    let shares = (initial_cash / buy_price) as u32;
+    let expected_nav = shares as f64 * last_price + (initial_cash - shares as f64 * buy_price);
+
+    let strategy = BuyOnceStrategy::new();
+    let portfolio = Portfolio::new(initial_cash, "SYNTH".to_string());
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::NextOpen);
+    engine.run(&candles);
+    let result = engine.result();
+
+    assert_eq!(result.trades.len(), 1, "should have exactly one buy trade");
+    assert!((result.trades[0].price - buy_price).abs() < 1e-9,
+        "NextOpen fill price {:.4} should equal candles[1].open {buy_price:.4}", result.trades[0].price);
+    let actual_nav = result.equity_curve.last().unwrap().nav;
+    let diff = (actual_nav - expected_nav).abs();
+    assert!(diff < 1.0, "NextOpen NAV {actual_nav:.2} vs expected {expected_nav:.2}, diff={diff:.6}");
+}
+
+/// A signal emitted on the final bar under NextOpen must not produce a fill.
+#[test]
+fn next_open_last_bar_signal_is_not_filled() {
+    let candles = load_fixture("synthetic_30.csv");
+    let n = candles.len();
+
+    // Send Hold for all bars except the last, then Buy on the last bar.
+    let mut signals: Vec<Signal> = vec![Signal::Hold; n - 1];
+    signals.push(Signal::Buy);
+
+    let strategy = MockStrategy::new(signals);
+    let portfolio = Portfolio::new(10_000.0, "SYNTH".to_string());
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::NextOpen);
+    engine.run(&candles);
+    let result = engine.result();
+
+    assert!(result.trades.is_empty(), "last-bar signal must not produce a fill under NextOpen");
+}
+
 #[test]
 fn zero_initial_cash_produces_no_trades() {
     let candles = load_fixture("synthetic_30.csv");
     let strategy = MovingAverageCrossover::new(MAType::SMA, 3, 5);
     let portfolio = Portfolio::new(0.0, "SYNTH".to_string());
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::Close);
     engine.run(&candles);
     let result = engine.result();
 
@@ -133,7 +178,7 @@ fn sma_crossover_buy_precedes_sell() {
     let candles = load_fixture("synthetic_30.csv");
     let strategy = MovingAverageCrossover::new(MAType::SMA, 3, 5);
     let portfolio = Portfolio::new(10_000.0, "SYNTH".to_string());
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::Close);
     engine.run(&candles);
     let result = engine.result();
 
@@ -163,7 +208,7 @@ fn portfolio_of_two_assets_aggregates_curve_and_breakdown() {
             strategy: Box::new(RSI::new(7)),
         },
     ];
-    let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
+    let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None, FillTiming::Close);
 
     // Both assets share the same 30 fixture dates → aggregate curve has 30 points.
     assert_eq!(res.equity_curve.len(), 30);
@@ -186,7 +231,7 @@ fn date_range_in_equity_curve_matches_fixture() {
     let candles = load_fixture("synthetic_30.csv");
     let strategy = MockStrategy::new(vec![]);
     let portfolio = Portfolio::new(10_000.0, "SYNTH".to_string());
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(FillTiming::Close);
     engine.run(&candles);
     let result = engine.result();
 

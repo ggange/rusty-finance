@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use backtesting::{
     data::{Candle, CSVDataSource, DataSource},
-    engine::BacktestEngine,
+    engine::{BacktestEngine, FillTiming},
     metrics::Metrics,
     portfolio::{ExecutionCosts, Portfolio},
     portfolio_backtest::{run_portfolio as run_portfolio_core, PortfolioAsset, RebalanceConfig},
@@ -93,6 +93,17 @@ fn build_strategy(spec: StrategySpec) -> PyResult<Box<dyn Strategy>> {
     })
 }
 
+/// Parse a fill_timing string into the Rust enum. Defaults to NextOpen.
+fn parse_fill_timing(s: &str) -> PyResult<FillTiming> {
+    match s {
+        "close" => Ok(FillTiming::Close),
+        "next_open" => Ok(FillTiming::NextOpen),
+        other => Err(PyValueError::new_err(format!(
+            "unknown fill_timing {:?}: expected \"close\" or \"next_open\"", other
+        ))),
+    }
+}
+
 // ─── Primary API ──────────────────────────────────────────────────────────────
 
 /// Run a backtest. `strategy_json` is a tagged object like
@@ -103,19 +114,21 @@ fn build_strategy(spec: StrategySpec) -> PyResult<Box<dyn Strategy>> {
 ///
 /// Returns a JSON string with `equity_curve`, `trades`, `metrics`, `benchmark`.
 #[pyfunction]
-#[pyo3(signature = (strategy_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0))]
+#[pyo3(signature = (strategy_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
 fn run(
     strategy_json: &str,
     candles_json: &str,
     initial_cash: f64,
     commission: f64,
     slippage_pct: f64,
+    fill_timing: &str,
 ) -> PyResult<String> {
     let spec: StrategySpec = serde_json::from_str(strategy_json)
         .map_err(|e| PyValueError::new_err(format!("invalid strategy JSON: {e}")))?;
     let candles = parse_candles(candles_json)?;
+    let timing = parse_fill_timing(fill_timing)?;
     let strategy = build_strategy(spec)?;
-    dispatch(strategy, initial_cash, commission, slippage_pct, &candles)
+    dispatch(strategy, initial_cash, commission, slippage_pct, timing, &candles)
 }
 
 /// Run a multi-asset portfolio backtest.
@@ -128,12 +141,13 @@ fn run(
 /// Returns a JSON string with `equity_curve`, `metrics`, `benchmark`, `risk`,
 /// per-asset `assets` breakdown, and optional `rebalance_dates`.
 #[pyfunction]
-#[pyo3(signature = (portfolio_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0))]
+#[pyo3(signature = (portfolio_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
 fn run_portfolio(
     portfolio_json: &str,
     initial_cash: f64,
     commission: f64,
     slippage_pct: f64,
+    fill_timing: &str,
 ) -> PyResult<String> {
     let req: PortfolioRequestIn = serde_json::from_str(portfolio_json)
         .map_err(|e| PyValueError::new_err(format!("invalid portfolio JSON: {e}")))?;
@@ -141,6 +155,7 @@ fn run_portfolio(
         return Err(PyValueError::new_err("portfolio must contain at least one asset"));
     }
 
+    let timing = parse_fill_timing(fill_timing)?;
     let mut assets: Vec<PortfolioAsset> = Vec::with_capacity(req.assets.len());
     for spec in req.assets {
         let weight = spec.weight.unwrap_or(1.0);
@@ -154,7 +169,7 @@ fn run_portfolio(
     }
 
     let costs = ExecutionCosts { commission_per_trade: commission, slippage_pct };
-    let result = run_portfolio_core(assets, initial_cash, costs, req.rebalance);
+    let result = run_portfolio_core(assets, initial_cash, costs, req.rebalance, timing);
     to_json(result)
 }
 
@@ -165,13 +180,14 @@ fn run_portfolio(
 ///
 /// Returns a JSON array of `{ params, metrics }` objects in the same order as the grid.
 #[pyfunction]
-#[pyo3(signature = (strategy_grid_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0))]
+#[pyo3(signature = (strategy_grid_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
 fn run_sweep(
     strategy_grid_json: &str,
     candles_json: &str,
     initial_cash: f64,
     commission: f64,
     slippage_pct: f64,
+    fill_timing: &str,
 ) -> PyResult<String> {
     #[derive(Serialize)]
     struct SweepPoint {
@@ -179,6 +195,7 @@ fn run_sweep(
         metrics: Metrics,
     }
 
+    let timing = parse_fill_timing(fill_timing)?;
     let candles = parse_candles(candles_json)?;
     let raw_specs: Vec<serde_json::Value> = serde_json::from_str(strategy_grid_json)
         .map_err(|e| PyValueError::new_err(format!("invalid strategy_grid JSON: {e}")))?;
@@ -194,7 +211,7 @@ fn run_sweep(
         let strategy = build_strategy(spec)?;
         let portfolio = Portfolio::new(initial_cash, "SWEEP".to_string())
             .with_costs(ExecutionCosts { commission_per_trade: commission, slippage_pct });
-        let mut engine = BacktestEngine::new(strategy, portfolio);
+        let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(timing);
         engine.run(&candles);
         results.push(SweepPoint { params, metrics: engine.result().metrics });
     }
@@ -210,7 +227,7 @@ fn run_ma(candles_json: &str, short_window: usize, long_window: usize,
     validate_ma_windows(short_window, long_window)?;
     let candles = parse_candles(candles_json)?;
     dispatch(MovingAverageCrossover::new(MAType::EMA, short_window, long_window),
-        initial_cash, commission, slippage_pct, &candles)
+        initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
 }
 
 #[pyfunction]
@@ -218,7 +235,7 @@ fn run_ma(candles_json: &str, short_window: usize, long_window: usize,
 fn run_rsi(candles_json: &str, period: usize, initial_cash: f64,
            commission: f64, slippage_pct: f64) -> PyResult<String> {
     let candles = parse_candles(candles_json)?;
-    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, &candles)
+    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
 }
 
 #[pyfunction]
@@ -228,7 +245,7 @@ fn run_ma_csv(csv_path: &str, short_window: usize, long_window: usize,
     validate_ma_windows(short_window, long_window)?;
     let candles = load_csv(csv_path)?;
     dispatch(MovingAverageCrossover::new(MAType::EMA, short_window, long_window),
-        initial_cash, commission, slippage_pct, &candles)
+        initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
 }
 
 #[pyfunction]
@@ -236,7 +253,7 @@ fn run_ma_csv(csv_path: &str, short_window: usize, long_window: usize,
 fn run_rsi_csv(csv_path: &str, period: usize, initial_cash: f64,
                commission: f64, slippage_pct: f64) -> PyResult<String> {
     let candles = load_csv(csv_path)?;
-    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, &candles)
+    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
@@ -246,11 +263,12 @@ fn dispatch<S: backtesting::strategy::Strategy>(
     initial_cash: f64,
     commission: f64,
     slippage_pct: f64,
+    fill_timing: FillTiming,
     candles: &[Candle],
 ) -> PyResult<String> {
     let portfolio = Portfolio::new(initial_cash, "SYMBOL".to_string())
         .with_costs(ExecutionCosts { commission_per_trade: commission, slippage_pct });
-    let mut engine = BacktestEngine::new(strategy, portfolio);
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(fill_timing);
     engine.run(candles);
     to_json(engine.result())
 }
