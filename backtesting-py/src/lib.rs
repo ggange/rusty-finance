@@ -218,6 +218,38 @@ fn run_sweep(
     to_json(results)
 }
 
+/// Run walk-forward validation over a candle dataset.
+///
+/// `strategy_grid_json` is a JSON array of strategy spec objects (same format
+/// as `run_sweep`). The candles are split into `n_windows` rolling folds; for
+/// each fold the best parameter combo (by `metric`) is selected on the train
+/// slice and evaluated on the test slice.
+///
+/// Returns a JSON string `{ "folds": [...] }`.
+#[pyfunction]
+#[pyo3(signature = (strategy_grid_json, candles_json, n_windows=5, train_frac=0.7, metric="sharpe_ratio", initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
+fn run_walk_forward(
+    strategy_grid_json: &str,
+    candles_json: &str,
+    n_windows: usize,
+    train_frac: f64,
+    metric: &str,
+    initial_cash: f64,
+    commission: f64,
+    slippage_pct: f64,
+    fill_timing: &str,
+) -> PyResult<String> {
+    use backtesting::walkforward;
+    let candles = parse_candles(candles_json)?;
+    let grid: Vec<serde_json::Value> = serde_json::from_str(strategy_grid_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid strategy_grid JSON: {e}")))?;
+    let timing = parse_fill_timing(fill_timing)?;
+    let costs = ExecutionCosts { commission_per_trade: commission, slippage_pct };
+    let result = walkforward::run_walk_forward(&candles, &grid, n_windows, train_frac, metric, initial_cash, costs, timing)
+        .map_err(|e| PyValueError::new_err(e))?;
+    to_json(result)
+}
+
 // ─── Convenience CSV functions (used by the CLI binary) ──────────────────────
 
 #[pyfunction]
@@ -307,6 +339,7 @@ fn backtesting_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run, m)?)?;
     m.add_function(wrap_pyfunction!(run_portfolio, m)?)?;
     m.add_function(wrap_pyfunction!(run_sweep, m)?)?;
+    m.add_function(wrap_pyfunction!(run_walk_forward, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma, m)?)?;
     m.add_function(wrap_pyfunction!(run_rsi, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma_csv, m)?)?;

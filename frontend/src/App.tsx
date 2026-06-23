@@ -5,15 +5,18 @@ import type { RanAsset } from "./components/results/PortfolioResultsPanel";
 import { RunHistoryPanel } from "./components/history/RunHistoryPanel";
 import { SweepForm } from "./components/sweep/SweepForm";
 import { SweepResultsPanel } from "./components/sweep/SweepResultsPanel";
+import { WalkForwardForm } from "./components/walkforward/WalkForwardForm";
+import { WalkForwardResultsPanel } from "./components/walkforward/WalkForwardResultsPanel";
 import { useStrategies } from "./hooks/useStrategies";
 import { useDatasets } from "./hooks/useDatasets";
 import { usePortfolio } from "./hooks/usePortfolio";
 import { useRunHistory } from "./hooks/useRunHistory";
 import { useSweep } from "./hooks/useSweep";
+import { useWalkForward } from "./hooks/useWalkForward";
 import { usePortfolioForm } from "./state/usePortfolioForm";
 import type { PortfolioResponse, RunDetail } from "./types/api";
 
-type AppTab = "backtest" | "sweep";
+type AppTab = "backtest" | "sweep" | "walkforward";
 
 function HealthBadge({
   engine,
@@ -46,8 +49,10 @@ export default function App() {
   const { result, status, error, run, restore } = usePortfolio();
   const history = useRunHistory();
   const sweep = useSweep();
+  const walkForward = useWalkForward();
   const [tab, setTab] = useState<AppTab>("backtest");
   const [sweepMetric, setSweepMetric] = useState("sharpe_ratio");
+  const [wfMetric, setWfMetric] = useState("sharpe_ratio");
 
   // Snapshot the candles each asset ran with, so per-asset charts stay
   // consistent with the result even if the form is edited afterward. The filter
@@ -114,6 +119,9 @@ export default function App() {
               <button type="button" className={tabClass("sweep")} onClick={() => setTab("sweep")}>
                 Parameter sweep
               </button>
+              <button type="button" className={tabClass("walkforward")} onClick={() => setTab("walkforward")}>
+                Walk-forward
+              </button>
             </div>
 
             {tab === "backtest" && (
@@ -156,6 +164,30 @@ export default function App() {
                   status={sweep.status}
                   error={sweep.error}
                   metric={sweepMetric}
+                />
+              </div>
+            )}
+
+            {tab === "walkforward" && (
+              <div className="grid gap-6 pt-4 lg:grid-cols-[380px_1fr]">
+                <WalkForwardForm
+                  strategies={strategies}
+                  datasets={datasets}
+                  initialCash={form.initialCash}
+                  commission={form.commission}
+                  slippagePct={form.slippagePct}
+                  onRun={(req) => {
+                    setWfMetric(req.metric ?? "sharpe_ratio");
+                    void walkForward.run(req);
+                  }}
+                  running={walkForward.status === "loading"}
+                  engineAvailable={!!engineAvailable}
+                />
+                <WalkForwardResultsPanel
+                  folds={walkForward.folds}
+                  status={walkForward.status}
+                  error={walkForward.error}
+                  metric={wfMetric}
                 />
               </div>
             )}

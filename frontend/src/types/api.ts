@@ -250,6 +250,38 @@ export interface RunsResponse {
   runs: RunListItem[];
 }
 
+// ─── /walkforward ───────────────────────────────────────────────────────────
+export interface WalkForwardRequest {
+  dataset: string;
+  strategy_type: string;
+  param_ranges: Record<string, ParamRange>;
+  n_windows?: number;
+  train_frac?: number;
+  metric?: string;
+  initial_cash?: number;
+  commission?: number;
+  slippage_pct?: number;
+  fill_timing?: FillTiming;
+}
+
+export interface DateRange {
+  start: string;
+  end: string;
+}
+
+export interface WalkForwardFold {
+  window_index: number;
+  train_range: DateRange;
+  test_range: DateRange;
+  best_params: Record<string, number>;
+  train_metrics: Metrics;
+  test_metrics: Metrics;
+}
+
+export interface WalkForwardResponse {
+  folds: WalkForwardFold[];
+}
+
 // FastAPI error envelope (422 has a detail array; 503 has a detail string).
 export interface ApiErrorBody {
   detail?:

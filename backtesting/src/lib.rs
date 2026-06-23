@@ -37,3 +37,4 @@ pub mod portfolio_backtest;
 pub mod metrics;
 pub mod risk;
 pub mod sweep;
+pub mod walkforward;

@@ -565,3 +565,60 @@ def test_fill_timing_accepted_by_sweep(monkeypatch, tmp_path):
         "fill_timing": "close",
     }
     assert client.post("/sweep", json=payload).status_code == 200
+
+
+# ─── /walkforward ─────────────────────────────────────────────────────────────
+
+WF_PAYLOAD = {
+    "dataset": "AAPL.csv",
+    "strategy_type": "ma_ema",
+    "param_ranges": {
+        "short_window": {"min": 3, "max": 5, "step": 2},
+        "long_window":  {"min": 6, "max": 10, "step": 4},
+    },
+    "n_windows": 2,
+    "train_frac": 0.7,
+    "metric": "sharpe_ratio",
+}
+
+
+def test_walkforward_returns_folds(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    res = client.post("/walkforward", json=WF_PAYLOAD)
+    assert res.status_code == 200
+    body = res.json()
+    assert "folds" in body
+    assert len(body["folds"]) == 2
+
+
+def test_walkforward_fold_has_required_fields(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    res = client.post("/walkforward", json=WF_PAYLOAD)
+    fold = res.json()["folds"][0]
+    for key in ("window_index", "train_range", "test_range", "best_params", "train_metrics", "test_metrics"):
+        assert key in fold, f"missing key: {key}"
+    for key in ("start", "end"):
+        assert key in fold["train_range"]
+        assert key in fold["test_range"]
+
+
+def test_walkforward_unknown_dataset_returns_404(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    payload = {**WF_PAYLOAD, "dataset": "NOSUCHFILE.csv"}
+    assert client.post("/walkforward", json=payload).status_code == 404
+
+
+def test_walkforward_invalid_n_windows_returns_422(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    payload = {**WF_PAYLOAD, "n_windows": 1}
+    assert client.post("/walkforward", json=payload).status_code == 422
+
+
+def test_walkforward_fill_timing_accepted(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    for timing in ("close", "next_open"):
+        payload = {**WF_PAYLOAD, "fill_timing": timing}
+        assert client.post("/walkforward", json=payload).status_code == 200
