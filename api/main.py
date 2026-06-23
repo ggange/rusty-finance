@@ -151,6 +151,7 @@ class PortfolioRequest(BaseModel):
     initial_cash: float = Field(default=10_000.0, gt=0)
     commission: float = Field(default=0.0, ge=0)
     slippage_pct: float = Field(default=0.0, ge=0, lt=1)
+    benchmark_symbol: Optional[str] = Field(default=None, description="Dataset name to use as external benchmark (e.g. 'SPY.csv')")
 
 
 # ─── Strategy registry metadata (consumed by the UI) ─────────────────────────
@@ -307,6 +308,17 @@ def _resolve_asset_candles(asset: AssetIn) -> list[dict]:
     return [c.model_dump() for c in src.candles]
 
 
+def _compute_bah_curve(candles: list[dict], initial_cash: float) -> list[dict]:
+    """Buy-and-hold NAV series: fractional shares of initial_cash at first bar's close."""
+    if not candles:
+        return []
+    start_price = candles[0]["close"]
+    if start_price <= 0:
+        return []
+    shares = initial_cash / start_price
+    return [{"date": c["date"], "nav": shares * c["close"]} for c in candles]
+
+
 def _portfolio_json(req: PortfolioRequest) -> str:
     """Assemble the JSON the Rust engine expects: assets with inline candles."""
     assets = []
@@ -395,6 +407,9 @@ async def portfolio(req: PortfolioRequest):
         req.slippage_pct,
     )
     result = json.loads(raw)
+    if req.benchmark_symbol:
+        bench_candles = _load_dataset(req.benchmark_symbol)
+        result["external_benchmark_curve"] = _compute_bah_curve(bench_candles, req.initial_cash)
     run_id = await db.save_run("portfolio", req.model_dump(mode="json"), result)
     result["run_id"] = run_id
     return result
