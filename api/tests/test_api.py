@@ -515,3 +515,53 @@ def test_portfolio_no_rebalancing_has_no_rebalance_dates():
     body = resp.json()
     # Without rebalancing, the field should be absent (skip_serializing_if)
     assert "rebalance_dates" not in body or body["rebalance_dates"] == []
+
+
+# ─── fill_timing ─────────────────────────────────────────────────────────────
+
+def test_fill_timing_accepted_by_backtest():
+    """fill_timing field is accepted on /backtest for both valid values."""
+    pytest.importorskip("backtesting_py")
+    for timing in ("close", "next_open"):
+        resp = client.post("/backtest", json={**MA_PAYLOAD, "fill_timing": timing})
+        assert resp.status_code == 200, f"fill_timing={timing!r} should be accepted"
+
+
+def test_fill_timing_invalid_value_returns_422():
+    """An unknown fill_timing value should be rejected by validation."""
+    bad = {**MA_PAYLOAD, "fill_timing": "unknown"}
+    assert client.post("/backtest", json=bad).status_code == 422
+
+
+def test_fill_timing_close_vs_next_open_produce_different_equity_curves():
+    """close and next_open should produce different equity curves for a strategy that trades."""
+    pytest.importorskip("backtesting_py")
+    payload_close = {**MA_PAYLOAD, "fill_timing": "close"}
+    payload_next  = {**MA_PAYLOAD, "fill_timing": "next_open"}
+    curve_close = client.post("/backtest", json=payload_close).json()["equity_curve"]
+    curve_next  = client.post("/backtest", json=payload_next).json()["equity_curve"]
+    # Both have the same number of points.
+    assert len(curve_close) == len(curve_next)
+    # The NAVs should differ because fills happen at different prices.
+    navs_close = [p["nav"] for p in curve_close]
+    navs_next  = [p["nav"] for p in curve_next]
+    assert navs_close != navs_next, "close and next_open must produce different equity curves"
+
+
+def test_fill_timing_accepted_by_portfolio():
+    pytest.importorskip("backtesting_py")
+    for timing in ("close", "next_open"):
+        payload = {**PORTFOLIO_PAYLOAD, "fill_timing": timing}
+        assert client.post("/portfolio", json=payload).status_code == 200
+
+
+def test_fill_timing_accepted_by_sweep(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    payload = {
+        "dataset": "AAPL.csv",
+        "strategy_type": "ma_ema",
+        "param_ranges": {"short_window": {"min": 3, "max": 5, "step": 2}, "long_window": {"min": 6, "max": 10, "step": 4}},
+        "fill_timing": "close",
+    }
+    assert client.post("/sweep", json=payload).status_code == 200

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Candle,
+  FillTiming,
   PortfolioRequest,
   RebalanceConfig,
   StrategyMeta,
@@ -53,6 +54,10 @@ export interface PortfolioForm {
   rebalanceConfig: RebalanceConfig | null;
   setRebalanceConfig: (v: RebalanceConfig | null) => void;
 
+  // Execution timing
+  fillTiming: FillTiming;
+  setFillTiming: (v: FillTiming) => void;
+
   // Derived
   strategyMeta: (type: StrategyType) => StrategyMeta | undefined;
   buildRequest: () => PortfolioRequest | null;
@@ -92,6 +97,7 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
   const [slippagePct, setSlippagePct] = useState(0);
   const [benchmarkSymbol, setBenchmarkSymbol] = useState<string | null>(null);
   const [rebalanceConfig, setRebalanceConfig] = useState<RebalanceConfig | null>(null);
+  const [fillTiming, setFillTiming] = useState<FillTiming>("next_open");
   const idCounter = useRef(0);
 
   const strategyMeta = useCallback(
@@ -208,11 +214,12 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
       initial_cash: initialCash,
       commission,
       slippage_pct: slippagePct,
+      fill_timing: fillTiming,
     };
     if (benchmarkSymbol) req.benchmark_symbol = benchmarkSymbol;
     if (rebalanceConfig) req.rebalance = rebalanceConfig;
     return req;
-  }, [assets, initialCash, commission, slippagePct, benchmarkSymbol, rebalanceConfig]);
+  }, [assets, initialCash, commission, slippagePct, benchmarkSymbol, rebalanceConfig, fillTiming]);
 
   const meta = useMemo(() => strategyMeta, [strategyMeta]);
 
@@ -235,6 +242,8 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
     setBenchmarkSymbol,
     rebalanceConfig,
     setRebalanceConfig,
+    fillTiming,
+    setFillTiming,
     strategyMeta: meta,
     buildRequest,
   };

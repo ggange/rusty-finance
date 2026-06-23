@@ -118,6 +118,10 @@ class BacktestRequest(BaseModel):
     initial_cash: float = Field(default=10_000.0, gt=0)
     commission: float = Field(default=0.0, ge=0)
     slippage_pct: float = Field(default=0.0, ge=0, lt=1)
+    fill_timing: Literal["close", "next_open"] = Field(
+        default="next_open",
+        description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
+    )
 
 
 # ─── Portfolio request (multi-asset) ─────────────────────────────────────────
@@ -177,6 +181,10 @@ class PortfolioRequest(BaseModel):
     slippage_pct: float = Field(default=0.0, ge=0, lt=1)
     benchmark_symbol: Optional[str] = Field(default=None, description="Dataset name to use as external benchmark (e.g. 'SPY.csv')")
     rebalance: Optional[RebalanceConfigIn] = Field(default=None, description="Optional periodic or threshold rebalancing")
+    fill_timing: Literal["close", "next_open"] = Field(
+        default="next_open",
+        description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
+    )
 
 
 # ─── Strategy registry metadata (consumed by the UI) ─────────────────────────
@@ -392,6 +400,7 @@ async def backtest(req: BacktestRequest):
         req.initial_cash,
         req.commission,
         req.slippage_pct,
+        req.fill_timing,
     )
     result = json.loads(raw)
     run_id = await db.save_run("backtest", req.model_dump(mode="json"), result)
@@ -433,6 +442,7 @@ async def portfolio(req: PortfolioRequest):
         req.initial_cash,
         req.commission,
         req.slippage_pct,
+        req.fill_timing,
     )
     result = json.loads(raw)
     if req.benchmark_symbol:
@@ -459,6 +469,10 @@ class SweepRequest(BaseModel):
     initial_cash: float = Field(default=10_000.0, gt=0)
     commission: float = Field(default=0.0, ge=0)
     slippage_pct: float = Field(default=0.0, ge=0, lt=1)
+    fill_timing: Literal["close", "next_open"] = Field(
+        default="next_open",
+        description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
+    )
 
 
 def _expand_param_grid(strategy_type: str, param_ranges: dict[str, "ParamRange"]) -> list[dict]:
@@ -516,6 +530,7 @@ async def sweep(req: SweepRequest):
         req.initial_cash,
         req.commission,
         req.slippage_pct,
+        req.fill_timing,
     )
     return {"results": json.loads(raw)}
 

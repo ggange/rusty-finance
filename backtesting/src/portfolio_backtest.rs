@@ -11,7 +11,7 @@ use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::data::Candle;
-use crate::engine::{BacktestEngine, BacktestResult};
+use crate::engine::{BacktestEngine, BacktestResult, FillTiming};
 use crate::metrics::{Benchmark, Metrics};
 use crate::portfolio::{EquityPoint, ExecutionCosts, Portfolio, TradeRecord};
 use crate::risk::RiskMetrics;
@@ -102,6 +102,7 @@ pub fn run_portfolio(
     initial_cash: f64,
     costs: ExecutionCosts,
     rebalance: Option<RebalanceConfig>,
+    fill_timing: FillTiming,
 ) -> PortfolioResult {
     let weights: Vec<f64> = assets.iter().map(|a| a.weight).collect();
     let normalized = normalize_weights(&weights);
@@ -110,7 +111,7 @@ pub fn run_portfolio(
     for (asset, w) in assets.into_iter().zip(normalized.into_iter()) {
         let allocated_cash = initial_cash * w;
         let portfolio = Portfolio::new(allocated_cash, asset.symbol.clone()).with_costs(costs.clone());
-        let mut engine = BacktestEngine::new(asset.strategy, portfolio);
+        let mut engine = BacktestEngine::new(asset.strategy, portfolio).with_fill_timing(fill_timing);
         engine.run(&asset.candles);
         asset_results.push(AssetResult {
             symbol: asset.symbol,
@@ -339,7 +340,7 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(vec![Signal::Hold, Signal::Hold])),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None, FillTiming::Close);
         assert!((res.assets[0].allocated_cash - 5_000.0).abs() < 1e-9);
         assert!((res.assets[1].allocated_cash - 5_000.0).abs() < 1e-9);
     }
@@ -362,7 +363,7 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(vec![Signal::Hold, Signal::Hold])),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None, FillTiming::Close);
         let last = res.equity_curve.last().unwrap().nav;
         assert!((last - 12_500.0).abs() < 1e-6, "last nav = {last}");
         // Aggregate must equal the sum of per-asset last NAVs.
@@ -373,11 +374,12 @@ mod tests {
     #[test]
     fn single_asset_portfolio_matches_direct_engine() {
         // Parity guard: a one-asset, full-weight portfolio equals a direct run.
+        // Both use FillTiming::Close to keep the comparison straightforward.
         let closes = [100.0, 110.0, 120.0, 90.0];
         let direct = {
             let strat = ScriptedStrategy::new(vec![Signal::Buy, Signal::Hold, Signal::Sell, Signal::Hold]);
             let pf = Portfolio::new(10_000.0, "X".into());
-            let mut eng = BacktestEngine::new(strat, pf);
+            let mut eng = BacktestEngine::new(strat, pf).with_fill_timing(FillTiming::Close);
             eng.run(&candles(&closes));
             eng.result()
         };
@@ -392,7 +394,7 @@ mod tests {
                 Signal::Hold,
             ])),
         }];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None, FillTiming::Close);
         assert!((res.metrics.total_return - direct.metrics.total_return).abs() < 1e-9);
         assert_eq!(res.equity_curve.len(), direct.equity_curve.len());
         assert!((res.equity_curve.last().unwrap().nav - direct.equity_curve.last().unwrap().nav).abs() < 1e-9);
@@ -414,14 +416,14 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(vec![Signal::Buy, Signal::Sell])),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None, FillTiming::Close);
         // Each asset does 1 buy + 1 sell = 2 trades → 4 total.
         assert_eq!(res.metrics.trade_count, 4);
     }
 
     #[test]
     fn empty_assets_produce_empty_curve() {
-        let res = run_portfolio(Vec::new(), 10_000.0, ExecutionCosts::default(), None);
+        let res = run_portfolio(Vec::new(), 10_000.0, ExecutionCosts::default(), None, FillTiming::Close);
         assert!(res.equity_curve.is_empty());
         assert_eq!(res.metrics.trade_count, 0);
         assert!(res.assets.is_empty());
@@ -456,7 +458,7 @@ mod tests {
                 strategy: Box::new(ScriptedStrategy::new(sig_b)),
             },
         ];
-        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None);
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default(), None, FillTiming::Close);
 
         // Risk struct is 2×2.
         assert_eq!(res.risk.correlation.len(), 2);

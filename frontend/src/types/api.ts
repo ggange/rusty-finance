@@ -66,6 +66,9 @@ export interface HealthResponse {
   engine: "available" | "unavailable";
 }
 
+// ─── fill_timing ────────────────────────────────────────────────────────────
+export type FillTiming = "close" | "next_open";
+
 // ─── /backtest request ──────────────────────────────────────────────────────
 export interface BacktestRequest {
   strategy: StrategyRequest;
@@ -73,6 +76,7 @@ export interface BacktestRequest {
   initial_cash: number;
   commission: number;
   slippage_pct: number;
+  fill_timing?: FillTiming;
 }
 
 // ─── /backtest response ─────────────────────────────────────────────────────
@@ -163,6 +167,7 @@ export interface PortfolioRequest {
   slippage_pct: number;
   benchmark_symbol?: string;
   rebalance?: RebalanceConfig;
+  fill_timing?: FillTiming;
 }
 
 // ─── /portfolio response ────────────────────────────────────────────────────
@@ -217,6 +222,7 @@ export interface SweepRequest {
   initial_cash: number;
   commission: number;
   slippage_pct: number;
+  fill_timing?: FillTiming;
 }
 
 export interface SweepPoint {

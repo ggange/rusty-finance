@@ -3,7 +3,7 @@ import { AssetList } from "./AssetList";
 import { CostInputs } from "./CostInputs";
 import { Field } from "../ui/Field";
 import type { PortfolioForm } from "../../state/usePortfolioForm";
-import type { Dataset, RebalanceConfig, StrategyMeta } from "../../types/api";
+import type { Dataset, FillTiming, RebalanceConfig, StrategyMeta } from "../../types/api";
 
 const selectClass =
   "w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
@@ -125,6 +125,20 @@ export function ConfigPanel({
           value={form.rebalanceConfig}
           onChange={form.setRebalanceConfig}
         />
+      </Panel>
+
+      <Panel title="Execution">
+        <Field label="Fill timing" htmlFor="fill-timing" hint="Next open = realistic (default); Close = legacy/lookahead-light">
+          <select
+            id="fill-timing"
+            value={form.fillTiming}
+            onChange={(e) => form.setFillTiming(e.target.value as FillTiming)}
+            className={selectClass}
+          >
+            <option value="next_open">Next open (realistic)</option>
+            <option value="close">Close (legacy)</option>
+          </select>
+        </Field>
       </Panel>
 
       <button
