@@ -162,10 +162,30 @@ export interface AssetResult extends BacktestResponse {
   allocated_cash: number;
 }
 
+export interface RollingPoint {
+  date: string;
+  value: number;
+}
+
+export interface RiskMetrics {
+  symbols: string[];
+  correlation: number[][];
+  covariance: number[][];
+  asset_volatility: number[];
+  asset_beta: number[];
+  contribution_to_risk: number[];
+  rolling_volatility: RollingPoint[];
+  var_95: number;
+  cvar_95: number;
+  var_99: number;
+  cvar_99: number;
+}
+
 export interface PortfolioResponse {
   equity_curve: EquityPoint[];
   metrics: Metrics;
   benchmark: Benchmark;
+  risk: RiskMetrics;
   assets: AssetResult[];
   run_id?: number;
 }

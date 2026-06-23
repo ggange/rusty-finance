@@ -14,6 +14,7 @@ use crate::data::Candle;
 use crate::engine::{BacktestEngine, BacktestResult};
 use crate::metrics::{Benchmark, Metrics};
 use crate::portfolio::{EquityPoint, ExecutionCosts, Portfolio, TradeRecord};
+use crate::risk::RiskMetrics;
 use crate::strategy::Strategy;
 
 /// One asset to include in a portfolio backtest.
@@ -48,6 +49,8 @@ pub struct PortfolioResult {
     pub metrics: Metrics,
     /// Weighted buy-and-hold benchmark across all assets.
     pub benchmark: Benchmark,
+    /// Risk analytics: correlation, VaR/CVaR, rolling vol, contribution to risk.
+    pub risk: RiskMetrics,
     /// Per-asset breakdown.
     pub assets: Vec<AssetResult>,
 }
@@ -91,15 +94,15 @@ pub fn run_portfolio(
         });
     }
 
-    let (equity_curve, metrics, benchmark) = aggregate(&asset_results, initial_cash);
-    PortfolioResult { equity_curve, metrics, benchmark, assets: asset_results }
+    let (equity_curve, metrics, benchmark, risk) = aggregate(&asset_results, initial_cash);
+    PortfolioResult { equity_curve, metrics, benchmark, risk, assets: asset_results }
 }
 
-/// Build the portfolio equity curve, metrics, and benchmark from the per-asset
-/// results. Sums each asset's as-of NAV across the union of all dates
+/// Build the portfolio equity curve, metrics, benchmark, and risk analytics from
+/// the per-asset results. Sums each asset's as-of NAV across the union of all dates
 /// (forward-filling each asset's last known NAV; before an asset's first bar it
 /// contributes its allocated cash).
-fn aggregate(assets: &[AssetResult], initial_cash: f64) -> (Vec<EquityPoint>, Metrics, Benchmark) {
+fn aggregate(assets: &[AssetResult], initial_cash: f64) -> (Vec<EquityPoint>, Metrics, Benchmark, RiskMetrics) {
     // Union of every date that appears in any asset's curve, sorted.
     let mut dates: BTreeMap<NaiveDate, ()> = BTreeMap::new();
     for a in assets {
@@ -116,6 +119,24 @@ fn aggregate(assets: &[AssetResult], initial_cash: f64) -> (Vec<EquityPoint>, Me
         }
         equity_curve.push(EquityPoint { date, nav });
     }
+
+    // Aligned per-asset daily return series for risk analytics.
+    let dates_vec: Vec<NaiveDate> = dates.keys().copied().collect();
+    let asset_returns: Vec<Vec<f64>> = assets
+        .iter()
+        .map(|a| {
+            let navs: Vec<f64> = dates_vec
+                .iter()
+                .map(|&d| asof_nav(&a.result.equity_curve, d, a.allocated_cash))
+                .collect();
+            navs.windows(2)
+                .map(|w| if w[0] != 0.0 { w[1] / w[0] - 1.0 } else { 0.0 })
+                .collect()
+        })
+        .collect();
+    let symbols: Vec<String> = assets.iter().map(|a| a.symbol.clone()).collect();
+    let weights: Vec<f64> = assets.iter().map(|a| a.weight).collect();
+    let risk = RiskMetrics::compute(&symbols, &asset_returns, &weights, &equity_curve);
 
     // Concatenate all trades for portfolio-level trade stats (win_rate, count).
     let all_trades: Vec<TradeRecord> =
@@ -136,7 +157,7 @@ fn aggregate(assets: &[AssetResult], initial_cash: f64) -> (Vec<EquityPoint>, Me
         Benchmark { total_return: 0.0, cagr: 0.0 }
     };
 
-    (equity_curve, metrics, benchmark)
+    (equity_curve, metrics, benchmark, risk)
 }
 
 /// NAV of one asset as of `date`: the most recent equity point on or before
@@ -306,5 +327,49 @@ mod tests {
         assert!(res.equity_curve.is_empty());
         assert_eq!(res.metrics.trade_count, 0);
         assert!(res.assets.is_empty());
+    }
+
+    #[test]
+    fn run_portfolio_populates_risk() {
+        // 25 bars → 24 return points, enough for rolling vol (needs 21).
+        let n = 25_usize;
+        let closes_a: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let closes_b: Vec<f64> = (0..n).map(|i| 50.0 - i as f64 * 0.2).collect();
+
+        // Buy on bar 1 so NAV tracks price → non-zero returns → non-zero covariance.
+        let sig_a: Vec<Signal> = std::iter::once(Signal::Buy)
+            .chain(std::iter::repeat(Signal::Hold).take(n - 1))
+            .collect();
+        let sig_b: Vec<Signal> = std::iter::once(Signal::Buy)
+            .chain(std::iter::repeat(Signal::Hold).take(n - 1))
+            .collect();
+
+        let assets = vec![
+            PortfolioAsset {
+                symbol: "A".into(),
+                weight: 0.6,
+                candles: candles(&closes_a),
+                strategy: Box::new(ScriptedStrategy::new(sig_a)),
+            },
+            PortfolioAsset {
+                symbol: "B".into(),
+                weight: 0.4,
+                candles: candles(&closes_b),
+                strategy: Box::new(ScriptedStrategy::new(sig_b)),
+            },
+        ];
+        let res = run_portfolio(assets, 10_000.0, ExecutionCosts::default());
+
+        // Risk struct is 2×2.
+        assert_eq!(res.risk.correlation.len(), 2);
+        assert_eq!(res.risk.correlation[0].len(), 2);
+        assert_eq!(res.risk.contribution_to_risk.len(), 2);
+
+        // Rolling vol: n − 1 returns (24), window 21 → 24 − 21 + 1 = 4 points.
+        assert!(!res.risk.rolling_volatility.is_empty());
+
+        // Contributions sum to ~1.
+        let ctr_sum: f64 = res.risk.contribution_to_risk.iter().sum();
+        assert!((ctr_sum - 1.0).abs() < 1e-9, "CTR sum = {ctr_sum}");
     }
 }
