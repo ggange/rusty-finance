@@ -12,6 +12,8 @@ import type {
   StrategiesResponse,
   SweepRequest,
   SweepResponse,
+  WalkForwardRequest,
+  WalkForwardResponse,
 } from "../types/api";
 
 // All requests go through the Vite proxy at /api, which strips the prefix and
@@ -82,4 +84,9 @@ export const api = {
     }),
   runs: (limit = 50) => request<RunsResponse>(`/runs?limit=${limit}`),
   run: (id: number) => request<RunDetail>(`/runs/${id}`),
+  walkForward: (body: WalkForwardRequest) =>
+    request<WalkForwardResponse>("/walkforward", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

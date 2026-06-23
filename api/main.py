@@ -535,6 +535,52 @@ async def sweep(req: SweepRequest):
     return {"results": json.loads(raw)}
 
 
+# ─── Walk-forward request ─────────────────────────────────────────────────────
+
+class WalkForwardRequest(BaseModel):
+    dataset: str
+    strategy_type: str
+    param_ranges: dict[str, ParamRange] = Field(min_length=1)
+    n_windows: int = Field(default=5, ge=2, description="Number of rolling folds (>= 2)")
+    train_frac: float = Field(default=0.7, gt=0.0, lt=1.0, description="Fraction of each fold used for training")
+    metric: str = Field(default="sharpe_ratio", description="Metric to optimise on the train slice")
+    initial_cash: float = Field(default=10_000.0, gt=0)
+    commission: float = Field(default=0.0, ge=0)
+    slippage_pct: float = Field(default=0.0, ge=0, lt=1)
+    fill_timing: Literal["close", "next_open"] = Field(
+        default="next_open",
+        description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
+    )
+
+
+@app.post("/walkforward")
+async def walkforward(req: WalkForwardRequest):
+    """Run walk-forward validation for a strategy over a single dataset.
+
+    Splits the dataset into `n_windows` rolling folds. For each fold the best
+    parameter combination (by `metric`) is selected on the train slice and then
+    evaluated on the held-out test slice. Returns one result per fold.
+    """
+    _require_engine()
+    candles = _load_dataset(req.dataset)
+    grid = _expand_param_grid(req.strategy_type, req.param_ranges)
+    if not grid:
+        raise HTTPException(status_code=422, detail="No valid parameter combinations in the given ranges")
+
+    raw = bt.run_walk_forward(
+        json.dumps(grid),
+        json.dumps(candles),
+        req.n_windows,
+        req.train_frac,
+        req.metric,
+        req.initial_cash,
+        req.commission,
+        req.slippage_pct,
+        req.fill_timing,
+    )
+    return json.loads(raw)
+
+
 @app.get("/runs")
 async def list_runs(limit: int = 50):
     """List recent backtest and portfolio runs, most recent first."""
