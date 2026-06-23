@@ -1,4 +1,5 @@
 import csv
+import itertools
 import json
 import os
 from contextlib import asynccontextmanager
@@ -413,6 +414,83 @@ async def portfolio(req: PortfolioRequest):
     run_id = await db.save_run("portfolio", req.model_dump(mode="json"), result)
     result["run_id"] = run_id
     return result
+
+
+# ─── Sweep request ────────────────────────────────────────────────────────────
+
+class ParamRange(BaseModel):
+    """One parameter's sweep range: start at `min`, step by `step`, up to `max`."""
+    min: float
+    max: float
+    step: float = Field(gt=0)
+
+
+class SweepRequest(BaseModel):
+    dataset: str
+    strategy_type: str
+    param_ranges: dict[str, ParamRange] = Field(min_length=1)
+    initial_cash: float = Field(default=10_000.0, gt=0)
+    commission: float = Field(default=0.0, ge=0)
+    slippage_pct: float = Field(default=0.0, ge=0, lt=1)
+
+
+def _expand_param_grid(strategy_type: str, param_ranges: dict[str, "ParamRange"]) -> list[dict]:
+    """Expand per-parameter ranges into the flat Cartesian product of valid strategy specs."""
+    range_lists: dict[str, list[float]] = {}
+    for name, rng in param_ranges.items():
+        vals: list[float] = []
+        v = rng.min
+        while v <= rng.max + rng.step * 1e-6:
+            vals.append(round(v, 8))
+            v += rng.step
+        range_lists[name] = vals
+
+    keys = list(range_lists.keys())
+    combos = list(itertools.product(*[range_lists[k] for k in keys]))
+
+    valid: list[dict] = []
+    for combo in combos:
+        params = {keys[i]: combo[i] for i in range(len(keys))}
+        # Coerce whole-number floats to int so Rust's usize fields deserialize correctly.
+        coerced = {k: (int(v) if isinstance(v, float) and v == int(v) else v) for k, v in params.items()}
+        spec = {"type": strategy_type, **coerced}
+        try:
+            # Validate via Pydantic — skip combos that violate strategy constraints.
+            _validate_strategy_spec(spec)
+            valid.append(spec)
+        except Exception:
+            continue
+    return valid
+
+
+def _validate_strategy_spec(spec: dict) -> None:
+    """Raise if the strategy spec violates constraints (e.g. short_window >= long_window)."""
+    from pydantic import TypeAdapter
+    TypeAdapter(StrategyParams).validate_python(spec)
+
+
+@app.post("/sweep")
+async def sweep(req: SweepRequest):
+    """Run one strategy over a grid of parameter combinations on a single dataset.
+
+    Returns a list of `{ params, metrics }` objects — one per valid combination.
+    Combinations that violate strategy constraints (e.g. short_window >= long_window)
+    are silently skipped.
+    """
+    _require_engine()
+    candles = _load_dataset(req.dataset)
+    grid = _expand_param_grid(req.strategy_type, req.param_ranges)
+    if not grid:
+        raise HTTPException(status_code=422, detail="No valid parameter combinations in the given ranges")
+
+    raw = bt.run_sweep(
+        json.dumps(grid),
+        json.dumps(candles),
+        req.initial_cash,
+        req.commission,
+        req.slippage_pct,
+    )
+    return {"results": json.loads(raw)}
 
 
 @app.get("/runs")

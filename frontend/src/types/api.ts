@@ -192,6 +192,31 @@ export interface PortfolioResponse {
   run_id?: number;
 }
 
+// ─── /sweep ─────────────────────────────────────────────────────────────────
+export interface ParamRange {
+  min: number;
+  max: number;
+  step: number;
+}
+
+export interface SweepRequest {
+  dataset: string;
+  strategy_type: string;
+  param_ranges: Record<string, ParamRange>;
+  initial_cash: number;
+  commission: number;
+  slippage_pct: number;
+}
+
+export interface SweepPoint {
+  params: Record<string, number>;
+  metrics: Metrics;
+}
+
+export interface SweepResponse {
+  results: SweepPoint[];
+}
+
 // ─── /runs ──────────────────────────────────────────────────────────────────
 export interface RunListItem {
   id: number;
