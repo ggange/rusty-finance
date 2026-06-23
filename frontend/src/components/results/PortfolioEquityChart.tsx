@@ -19,6 +19,7 @@ export interface BenchmarkAsset {
 interface PortfolioEquityChartProps {
   equityCurve: EquityPoint[];
   assets: BenchmarkAsset[];
+  externalBenchmarkCurve?: EquityPoint[];
 }
 
 /**
@@ -30,6 +31,7 @@ interface PortfolioEquityChartProps {
 export function PortfolioEquityChart({
   equityCurve,
   assets,
+  externalBenchmarkCurve,
 }: PortfolioEquityChartProps) {
   // Precompute per-asset buy-and-hold parameters and a date→close lookup.
   const holdings = assets.map((a) => {
@@ -40,6 +42,12 @@ export function PortfolioEquityChart({
     return { shares, cashRem, byDate, lastClose: firstClose };
   });
 
+  // Build a date→nav lookup for the external benchmark, carrying forward the last known value.
+  const extByDate = externalBenchmarkCurve
+    ? new Map(externalBenchmarkCurve.map((p) => [p.date, p.nav]))
+    : null;
+  let lastExtNav: number | undefined;
+
   const data = equityCurve.map((pt) => {
     let benchmark = 0;
     for (const h of holdings) {
@@ -47,7 +55,13 @@ export function PortfolioEquityChart({
       if (close !== undefined) h.lastClose = close;
       benchmark += h.shares * h.lastClose + h.cashRem;
     }
-    return { date: pt.date, strategy: pt.nav, benchmark };
+    let extBenchmark: number | undefined;
+    if (extByDate) {
+      const v = extByDate.get(pt.date);
+      if (v !== undefined) lastExtNav = v;
+      extBenchmark = lastExtNav;
+    }
+    return { date: pt.date, strategy: pt.nav, benchmark, extBenchmark };
   });
 
   return (
@@ -89,6 +103,17 @@ export function PortfolioEquityChart({
             strokeDasharray="4 4"
             dot={false}
           />
+          {extByDate && (
+            <Line
+              type="monotone"
+              dataKey="extBenchmark"
+              name="Benchmark"
+              stroke="#fb923c"
+              strokeWidth={1.5}
+              strokeDasharray="6 2"
+              dot={false}
+            />
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>

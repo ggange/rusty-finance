@@ -44,6 +44,10 @@ export interface PortfolioForm {
   setCommission: (v: number) => void;
   setSlippagePct: (v: number) => void;
 
+  // Benchmark
+  benchmarkSymbol: string | null;
+  setBenchmarkSymbol: (v: string | null) => void;
+
   // Derived
   strategyMeta: (type: StrategyType) => StrategyMeta | undefined;
   buildRequest: () => PortfolioRequest | null;
@@ -81,6 +85,7 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
   const [initialCash, setInitialCash] = useState(10_000);
   const [commission, setCommission] = useState(0);
   const [slippagePct, setSlippagePct] = useState(0);
+  const [benchmarkSymbol, setBenchmarkSymbol] = useState<string | null>(null);
   const idCounter = useRef(0);
 
   const strategyMeta = useCallback(
@@ -184,7 +189,7 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
     );
     if (ready.length === 0) return null;
 
-    return {
+    const req: PortfolioRequest = {
       assets: ready.map((a) => ({
         symbol: a.symbol || "ASSET",
         weight: a.weight,
@@ -198,7 +203,9 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
       commission,
       slippage_pct: slippagePct,
     };
-  }, [assets, initialCash, commission, slippagePct]);
+    if (benchmarkSymbol) req.benchmark_symbol = benchmarkSymbol;
+    return req;
+  }, [assets, initialCash, commission, slippagePct, benchmarkSymbol]);
 
   const meta = useMemo(() => strategyMeta, [strategyMeta]);
 
@@ -217,6 +224,8 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
     setInitialCash,
     setCommission,
     setSlippagePct,
+    benchmarkSymbol,
+    setBenchmarkSymbol,
     strategyMeta: meta,
     buildRequest,
   };

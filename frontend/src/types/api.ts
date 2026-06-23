@@ -152,6 +152,7 @@ export interface PortfolioRequest {
   initial_cash: number;
   commission: number;
   slippage_pct: number;
+  benchmark_symbol?: string;
 }
 
 // ─── /portfolio response ────────────────────────────────────────────────────
@@ -187,6 +188,7 @@ export interface PortfolioResponse {
   benchmark: Benchmark;
   risk: RiskMetrics;
   assets: AssetResult[];
+  external_benchmark_curve?: EquityPoint[];
   run_id?: number;
 }
 

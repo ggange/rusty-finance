@@ -85,6 +85,7 @@ export function PortfolioResultsPanel({
         <PortfolioEquityChart
           equityCurve={result.equity_curve}
           assets={benchmarkAssets}
+          externalBenchmarkCurve={result.external_benchmark_curve}
         />
       </Panel>
 

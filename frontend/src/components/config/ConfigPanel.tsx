@@ -1,6 +1,7 @@
 import { Panel } from "../ui/Panel";
 import { AssetList } from "./AssetList";
 import { CostInputs } from "./CostInputs";
+import { Field } from "../ui/Field";
 import type { PortfolioForm } from "../../state/usePortfolioForm";
 import type { Dataset, StrategyMeta } from "../../types/api";
 
@@ -41,6 +42,24 @@ export function ConfigPanel({
           onCommission={form.setCommission}
           onSlippagePct={form.setSlippagePct}
         />
+      </Panel>
+
+      <Panel title="Benchmark">
+        <Field label="External benchmark" htmlFor="benchmark-symbol" hint="Overlay a buy-and-hold series on the equity chart">
+          <select
+            id="benchmark-symbol"
+            value={form.benchmarkSymbol ?? ""}
+            onChange={(e) => form.setBenchmarkSymbol(e.target.value || null)}
+            className="w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none"
+          >
+            <option value="">None (internal buy &amp; hold only)</option>
+            {datasets.map((d) => (
+              <option key={d.name} value={d.name}>
+                {d.symbol}
+              </option>
+            ))}
+          </select>
+        </Field>
       </Panel>
 
       <button

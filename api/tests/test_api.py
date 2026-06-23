@@ -388,3 +388,23 @@ def test_portfolio_includes_risk_block():
     n = len(body["assets"])
     assert len(risk["correlation"]) == n, "correlation matrix wrong row count"
     assert all(len(row) == n for row in risk["correlation"]), "correlation matrix wrong col count"
+
+
+def test_portfolio_external_benchmark_curve_present():
+    pytest.importorskip("backtesting_py")
+    payload = {**PORTFOLIO_PAYLOAD, "benchmark_symbol": "SPY.csv"}
+    resp = client.post("/portfolio", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    curve = body.get("external_benchmark_curve")
+    assert curve is not None, "response missing 'external_benchmark_curve'"
+    assert len(curve) > 0, "external_benchmark_curve is empty"
+    assert "date" in curve[0] and "nav" in curve[0], "curve points must have date and nav"
+    assert curve[0]["nav"] > 0, "initial NAV must be positive"
+
+
+def test_portfolio_external_benchmark_unknown_dataset_returns_404():
+    pytest.importorskip("backtesting_py")
+    payload = {**PORTFOLIO_PAYLOAD, "benchmark_symbol": "UNKNOWN.csv"}
+    resp = client.post("/portfolio", json=payload)
+    assert resp.status_code == 404
