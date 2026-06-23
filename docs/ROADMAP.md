@@ -111,7 +111,7 @@ The goal: stop eyeballing single runs; support real strategy research.
 > first make the backtest *trustworthy*, then go live on paper. See the decision
 > log for why.
 
-## Horizon 3 — "Make it trustworthy" (pre-trading hardening) — IN PROGRESS
+## Horizon 3 — "Make it trustworthy" (pre-trading hardening) ✅ COMPLETE
 
 The goal: make the backtest a defensible predictor of live results. Nothing here
 is optional before risking capital — a backtest you can't trust is worse than no
@@ -130,10 +130,13 @@ backtest, because it loses money with confidence.
   A/B comparison. Threaded through engine → portfolio → sweep → walk-forward →
   API → UI. Bid/ask spread, market impact, and partial fills stay deferred until
   daily-bar, market-order trading actually hits those cases. Committed `ad7b4eb`.
-- ⬜ **Strategy validation pass.** Tooling is now in place; the remaining work is
-  research, not code: run each strategy through `/walkforward` on the catalog
-  data and keep only those whose edge survives out-of-sample. Trading begins from
-  this shortlist, not from the full sweep grid.
+- ✅ **Strategy validation pass.** Ran all six strategy families through
+  `/walkforward` (5 rolling folds, `next_open` fills) across all 5 catalog
+  assets. Two strategies survive out-of-sample across the full catalog: **RSI**
+  (test Sharpe +1.18, positive on 5/5 assets, 80 % of folds) and **Bollinger
+  Bands** (test Sharpe +1.13, positive on 5/5 assets). EMA and MACD are
+  eliminated; WMA and SMA are conditional (AAPL/SPY only). Full findings and
+  trading shortlist in `docs/strategy-validation.md`.
 
 ## Horizon 4 — "Go live (paper first)" (the trading track)
 
