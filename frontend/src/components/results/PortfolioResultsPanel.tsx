@@ -5,6 +5,7 @@ import { MetricCards } from "./MetricCards";
 import { PortfolioEquityChart } from "./PortfolioEquityChart";
 import { DrawdownChart } from "./DrawdownChart";
 import { AssetBreakdown } from "./AssetBreakdown";
+import { RiskPanel } from "./RiskPanel";
 import type { PortfolioStatus } from "../../hooks/usePortfolio";
 import type { Candle, PortfolioResponse } from "../../types/api";
 
@@ -89,6 +90,10 @@ export function PortfolioResultsPanel({
 
       <Panel title="Portfolio drawdown">
         <DrawdownChart equityCurve={result.equity_curve} />
+      </Panel>
+
+      <Panel title="Risk analytics">
+        <RiskPanel risk={result.risk} />
       </Panel>
 
       <Panel title="By asset">

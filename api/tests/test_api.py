@@ -373,3 +373,18 @@ def test_macd_fast_gte_slow_returns_422():
 def test_bollinger_bands_bad_std_dev_returns_422():
     bad = {**BB_PAYLOAD, "strategy": {"type": "bollinger_bands", "period": 20, "std_dev_mult": 0.3}}
     assert client.post("/backtest", json=bad).status_code == 422
+
+
+def test_portfolio_includes_risk_block():
+    pytest.importorskip("backtesting_py")
+    resp = client.post("/portfolio", json=PORTFOLIO_PAYLOAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    risk = body.get("risk")
+    assert risk is not None, "response missing 'risk' key"
+    for key in ("correlation", "covariance", "contribution_to_risk",
+                "rolling_volatility", "var_95", "cvar_95", "var_99", "cvar_99"):
+        assert key in risk, f"risk missing key: {key}"
+    n = len(body["assets"])
+    assert len(risk["correlation"]) == n, "correlation matrix wrong row count"
+    assert all(len(row) == n for row in risk["correlation"]), "correlation matrix wrong col count"
