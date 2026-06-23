@@ -408,3 +408,53 @@ def test_portfolio_external_benchmark_unknown_dataset_returns_404():
     payload = {**PORTFOLIO_PAYLOAD, "benchmark_symbol": "UNKNOWN.csv"}
     resp = client.post("/portfolio", json=payload)
     assert resp.status_code == 404
+
+
+# ─── /sweep ───────────────────────────────────────────────────────────────────
+
+SWEEP_PAYLOAD = {
+    "dataset": "AAPL.csv",
+    "strategy_type": "ma_ema",
+    "param_ranges": {
+        "short_window": {"min": 5, "max": 15, "step": 5},
+        "long_window": {"min": 20, "max": 40, "step": 10},
+    },
+}
+
+
+def test_sweep_returns_results():
+    pytest.importorskip("backtesting_py")
+    resp = client.post("/sweep", json=SWEEP_PAYLOAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "results" in body
+    assert len(body["results"]) > 0
+    first = body["results"][0]
+    assert "params" in first and "metrics" in first
+    assert "short_window" in first["params"] and "long_window" in first["params"]
+    assert "sharpe_ratio" in first["metrics"]
+
+
+def test_sweep_skips_invalid_combinations():
+    pytest.importorskip("backtesting_py")
+    # short_window overlaps long_window — all combos where short >= long are filtered
+    payload = {
+        "dataset": "AAPL.csv",
+        "strategy_type": "ma_ema",
+        "param_ranges": {
+            "short_window": {"min": 10, "max": 30, "step": 10},
+            "long_window": {"min": 10, "max": 30, "step": 10},
+        },
+    }
+    resp = client.post("/sweep", json=payload)
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    for r in results:
+        assert r["params"]["short_window"] < r["params"]["long_window"]
+
+
+def test_sweep_unknown_dataset_returns_404():
+    pytest.importorskip("backtesting_py")
+    payload = {**SWEEP_PAYLOAD, "dataset": "UNKNOWN.csv"}
+    resp = client.post("/sweep", json=payload)
+    assert resp.status_code == 404

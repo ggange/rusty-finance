@@ -10,6 +10,8 @@ import type {
   RunDetail,
   RunsResponse,
   StrategiesResponse,
+  SweepRequest,
+  SweepResponse,
 } from "../types/api";
 
 // All requests go through the Vite proxy at /api, which strips the prefix and
@@ -70,6 +72,11 @@ export const api = {
     }),
   portfolio: (body: PortfolioRequest) =>
     request<PortfolioResponse>("/portfolio", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  sweep: (body: SweepRequest) =>
+    request<SweepResponse>("/sweep", {
       method: "POST",
       body: JSON.stringify(body),
     }),

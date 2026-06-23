@@ -1,9 +1,11 @@
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use backtesting::{
     data::{Candle, CSVDataSource, DataSource},
     engine::BacktestEngine,
+    metrics::Metrics,
     portfolio::{ExecutionCosts, Portfolio},
     portfolio_backtest::{run_portfolio as run_portfolio_core, PortfolioAsset},
     strategy::ma::{MAType, MovingAverageCrossover},
@@ -147,6 +149,49 @@ fn run_portfolio(
     to_json(result)
 }
 
+/// Run the same strategy with different parameter sets over one candle series.
+///
+/// `strategy_grid_json` is a JSON array of full strategy objects (including `type`),
+/// each representing one parameter combination to test.
+///
+/// Returns a JSON array of `{ params, metrics }` objects in the same order as the grid.
+#[pyfunction]
+#[pyo3(signature = (strategy_grid_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0))]
+fn run_sweep(
+    strategy_grid_json: &str,
+    candles_json: &str,
+    initial_cash: f64,
+    commission: f64,
+    slippage_pct: f64,
+) -> PyResult<String> {
+    #[derive(Serialize)]
+    struct SweepPoint {
+        params: HashMap<String, serde_json::Value>,
+        metrics: Metrics,
+    }
+
+    let candles = parse_candles(candles_json)?;
+    let raw_specs: Vec<serde_json::Value> = serde_json::from_str(strategy_grid_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid strategy_grid JSON: {e}")))?;
+
+    let mut results: Vec<SweepPoint> = Vec::with_capacity(raw_specs.len());
+    for raw in raw_specs {
+        let spec: StrategySpec = serde_json::from_value(raw.clone())
+            .map_err(|e| PyValueError::new_err(format!("invalid strategy spec: {e}")))?;
+        let params: HashMap<String, serde_json::Value> = raw
+            .as_object()
+            .map(|obj| obj.iter().filter(|(k, _)| k.as_str() != "type").map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+        let strategy = build_strategy(spec)?;
+        let portfolio = Portfolio::new(initial_cash, "SWEEP".to_string())
+            .with_costs(ExecutionCosts { commission_per_trade: commission, slippage_pct });
+        let mut engine = BacktestEngine::new(strategy, portfolio);
+        engine.run(&candles);
+        results.push(SweepPoint { params, metrics: engine.result().metrics });
+    }
+    to_json(results)
+}
+
 // ─── Convenience CSV functions (used by the CLI binary) ──────────────────────
 
 #[pyfunction]
@@ -234,6 +279,7 @@ fn to_json<T: serde::Serialize>(v: T) -> PyResult<String> {
 fn backtesting_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run, m)?)?;
     m.add_function(wrap_pyfunction!(run_portfolio, m)?)?;
+    m.add_function(wrap_pyfunction!(run_sweep, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma, m)?)?;
     m.add_function(wrap_pyfunction!(run_rsi, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma_csv, m)?)?;
