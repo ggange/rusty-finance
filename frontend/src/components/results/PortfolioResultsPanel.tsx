@@ -79,6 +79,11 @@ export function PortfolioResultsPanel({
     <div className="space-y-4">
       <Panel title="Portfolio metrics">
         <MetricCards metrics={result.metrics} benchmark={result.benchmark} />
+        {result.rebalance_dates && result.rebalance_dates.length > 0 && (
+          <p className="mt-3 text-xs text-violet-400">
+            ↺ Rebalanced {result.rebalance_dates.length} time{result.rebalance_dates.length !== 1 ? "s" : ""} — purple dashed lines on equity chart
+          </p>
+        )}
       </Panel>
 
       <Panel title="Portfolio equity vs. buy & hold">
@@ -86,6 +91,7 @@ export function PortfolioResultsPanel({
           equityCurve={result.equity_curve}
           assets={benchmarkAssets}
           externalBenchmarkCurve={result.external_benchmark_curve}
+          rebalanceDates={result.rebalance_dates}
         />
       </Panel>
 

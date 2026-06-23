@@ -458,3 +458,60 @@ def test_sweep_unknown_dataset_returns_404():
     payload = {**SWEEP_PAYLOAD, "dataset": "UNKNOWN.csv"}
     resp = client.post("/sweep", json=payload)
     assert resp.status_code == 404
+
+
+# ─── Rebalancing ─────────────────────────────────────────────────────────────
+
+def test_portfolio_monthly_rebalancing_returns_rebalance_dates():
+    pytest.importorskip("backtesting_py")
+    payload = {
+        **PORTFOLIO_PAYLOAD,
+        "assets": [
+            {
+                "symbol": "AAPL",
+                "source": {"kind": "dataset", "name": "AAPL.csv"},
+                "strategy": {"type": "ma_ema", "short_window": 5, "long_window": 20},
+            },
+            {
+                "symbol": "SPY",
+                "source": {"kind": "dataset", "name": "SPY.csv"},
+                "strategy": {"type": "rsi", "period": 14},
+            },
+        ],
+        "rebalance": {"frequency": {"kind": "monthly"}},
+    }
+    resp = client.post("/portfolio", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    dates = body.get("rebalance_dates", [])
+    assert len(dates) > 0, "monthly rebalancing should produce at least one rebalance date"
+    # Each date string should be YYYY-MM-DD format
+    assert all(len(d) == 10 and d[4] == "-" and d[7] == "-" for d in dates)
+
+
+def test_portfolio_quarterly_rebalancing():
+    pytest.importorskip("backtesting_py")
+    monthly_payload = {
+        **PORTFOLIO_PAYLOAD,
+        "assets": [
+            {"symbol": "AAPL", "source": {"kind": "dataset", "name": "AAPL.csv"}, "strategy": {"type": "ma_sma", "short_window": 5, "long_window": 20}},
+            {"symbol": "MSFT", "source": {"kind": "dataset", "name": "MSFT.csv"}, "strategy": {"type": "rsi", "period": 14}},
+        ],
+        "rebalance": {"frequency": {"kind": "quarterly"}},
+    }
+    resp = client.post("/portfolio", json=monthly_payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    dates = body.get("rebalance_dates", [])
+    assert len(dates) > 0, "quarterly rebalancing should produce rebalance dates"
+    # Quarterly should have fewer rebalances than monthly over the same period.
+    assert len(dates) <= 20  # 5 years * 4 quarters = 20 max
+
+
+def test_portfolio_no_rebalancing_has_no_rebalance_dates():
+    pytest.importorskip("backtesting_py")
+    resp = client.post("/portfolio", json=PORTFOLIO_PAYLOAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    # Without rebalancing, the field should be absent (skip_serializing_if)
+    assert "rebalance_dates" not in body or body["rebalance_dates"] == []

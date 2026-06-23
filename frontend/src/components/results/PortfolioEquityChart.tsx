@@ -3,6 +3,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -20,6 +21,7 @@ interface PortfolioEquityChartProps {
   equityCurve: EquityPoint[];
   assets: BenchmarkAsset[];
   externalBenchmarkCurve?: EquityPoint[];
+  rebalanceDates?: string[];
 }
 
 /**
@@ -32,6 +34,7 @@ export function PortfolioEquityChart({
   equityCurve,
   assets,
   externalBenchmarkCurve,
+  rebalanceDates,
 }: PortfolioEquityChartProps) {
   // Precompute per-asset buy-and-hold parameters and a date→close lookup.
   const holdings = assets.map((a) => {
@@ -114,6 +117,16 @@ export function PortfolioEquityChart({
               dot={false}
             />
           )}
+          {rebalanceDates?.map((d) => (
+            <ReferenceLine
+              key={d}
+              x={d}
+              stroke="#7c3aed"
+              strokeWidth={1}
+              strokeDasharray="2 4"
+              label={{ value: "↺", position: "insideTopRight", fill: "#7c3aed", fontSize: 10 }}
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </div>

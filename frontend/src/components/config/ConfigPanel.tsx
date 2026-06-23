@@ -3,7 +3,65 @@ import { AssetList } from "./AssetList";
 import { CostInputs } from "./CostInputs";
 import { Field } from "../ui/Field";
 import type { PortfolioForm } from "../../state/usePortfolioForm";
-import type { Dataset, StrategyMeta } from "../../types/api";
+import type { Dataset, RebalanceConfig, StrategyMeta } from "../../types/api";
+
+const selectClass =
+  "w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
+
+function RebalancingControls({
+  value,
+  onChange,
+}: {
+  value: RebalanceConfig | null;
+  onChange: (v: RebalanceConfig | null) => void;
+}) {
+  const frequency = value?.frequency.kind ?? "none";
+  const threshold = value?.frequency.kind === "threshold" ? value.frequency.threshold : 0.05;
+
+  function handleFrequencyChange(kind: string) {
+    if (kind === "none") {
+      onChange(null);
+    } else if (kind === "monthly" || kind === "quarterly") {
+      onChange({ frequency: { kind } });
+    } else if (kind === "threshold") {
+      onChange({ frequency: { kind: "threshold", threshold } });
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <Field label="Frequency" htmlFor="rebalance-freq">
+        <select
+          id="rebalance-freq"
+          value={frequency}
+          onChange={(e) => handleFrequencyChange(e.target.value)}
+          className={selectClass}
+        >
+          <option value="none">None</option>
+          <option value="monthly">Monthly</option>
+          <option value="quarterly">Quarterly</option>
+          <option value="threshold">Drift threshold</option>
+        </select>
+      </Field>
+      {frequency === "threshold" && (
+        <Field label="Max drift (%)" htmlFor="rebalance-threshold" hint="Rebalance when any asset drifts by this much from its target weight">
+          <input
+            id="rebalance-threshold"
+            type="number"
+            min={0.1}
+            max={50}
+            step={0.5}
+            value={threshold * 100}
+            onChange={(e) =>
+              onChange({ frequency: { kind: "threshold", threshold: Number(e.target.value) / 100 } })
+            }
+            className={selectClass}
+          />
+        </Field>
+      )}
+    </div>
+  );
+}
 
 interface ConfigPanelProps {
   strategies: StrategyMeta[];
@@ -60,6 +118,13 @@ export function ConfigPanel({
             ))}
           </select>
         </Field>
+      </Panel>
+
+      <Panel title="Rebalancing">
+        <RebalancingControls
+          value={form.rebalanceConfig}
+          onChange={form.setRebalanceConfig}
+        />
       </Panel>
 
       <button
