@@ -149,7 +149,7 @@ trading — see guiding principles 5 and 6.
   `order_intents` tables) + `POST /trade/tick` API endpoint. The whole
   data→signal→order-intent→persistence loop runs with zero financial risk;
   re-ticking while already long is a no-op. 18 tests green. Committed
-  `<SHA-placeholder>`.
+  `cc05ec9`.
 - **Live data + scheduler.** A scheduled job that refreshes bars into the catalog
   (extend `scripts/fetch_data.py`) and runs the strategy on the *latest* bar to
   emit a target signal. Move from file-replay to a wall-clock loop.
