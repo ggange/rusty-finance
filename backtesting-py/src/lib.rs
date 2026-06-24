@@ -12,7 +12,7 @@ use backtesting::{
     strategy::rsi::RSI,
     strategy::macd::MACD,
     strategy::bollinger_bands::BollingerBands as BBands,
-    strategy::Strategy,
+    strategy::{Strategy, Signal},
 };
 
 // ─── Strategy registry ────────────────────────────────────────────────────────
@@ -250,6 +250,47 @@ fn run_walk_forward(
     to_json(result)
 }
 
+/// Return the signal produced by the strategy on the final bar of the candle series.
+///
+/// `strategy_json` — same tagged format as `run` (e.g. `{"type":"rsi","period":14}`).
+/// `candles_json`  — JSON array of candle objects.
+///
+/// Returns `{"signal": "buy"|"sell"|"hold", "date": "YYYY-MM-DD", "close": <f64>, "bars": <usize>}`.
+#[pyfunction]
+fn latest_signal(strategy_json: &str, candles_json: &str) -> PyResult<String> {
+    #[derive(Serialize)]
+    struct LatestSignalResult {
+        signal: String,
+        date: String,
+        close: f64,
+        bars: usize,
+    }
+
+    let spec: StrategySpec = serde_json::from_str(strategy_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid strategy JSON: {e}")))?;
+    let candles = parse_candles(candles_json)?;
+    if candles.is_empty() {
+        return Err(PyValueError::new_err("candles must not be empty"));
+    }
+    let mut strategy = build_strategy(spec)?;
+    let mut last_signal = Signal::Hold;
+    for candle in &candles {
+        last_signal = strategy.on_bar(candle);
+    }
+    let last = candles.last().unwrap();
+    let signal_str = match last_signal {
+        Signal::Buy  => "buy",
+        Signal::Sell => "sell",
+        Signal::Hold => "hold",
+    };
+    to_json(LatestSignalResult {
+        signal: signal_str.to_string(),
+        date: last.date.to_string(),
+        close: last.close,
+        bars: candles.len(),
+    })
+}
+
 // ─── Convenience CSV functions (used by the CLI binary) ──────────────────────
 
 #[pyfunction]
@@ -340,6 +381,7 @@ fn backtesting_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_portfolio, m)?)?;
     m.add_function(wrap_pyfunction!(run_sweep, m)?)?;
     m.add_function(wrap_pyfunction!(run_walk_forward, m)?)?;
+    m.add_function(wrap_pyfunction!(latest_signal, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma, m)?)?;
     m.add_function(wrap_pyfunction!(run_rsi, m)?)?;
     m.add_function(wrap_pyfunction!(run_ma_csv, m)?)?;

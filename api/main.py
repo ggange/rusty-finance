@@ -1,15 +1,13 @@
-import csv
 import itertools
 import json
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Annotated, Literal, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 import api.db as db
+from api.datasets import load_dataset, list_datasets as _list_datasets_impl, candles_to_json
 
 try:
     import backtesting_py as bt
@@ -258,7 +256,7 @@ def _require_engine() -> None:
 
 
 def _candles_json(candles: list[CandleIn]) -> str:
-    return json.dumps([c.model_dump() for c in candles])
+    return candles_to_json([c.model_dump() for c in candles])
 
 
 def _strategy_json(strategy: StrategyParams) -> str:
@@ -266,71 +264,14 @@ def _strategy_json(strategy: StrategyParams) -> str:
 
 
 # ─── Dataset catalog ──────────────────────────────────────────────────────────
-
-def _data_dir() -> Path:
-    """Directory holding one CSV per symbol. Override with RUSTY_FINANCE_DATA_DIR;
-    defaults to <repo>/data/datasets."""
-    env = os.environ.get("RUSTY_FINANCE_DATA_DIR")
-    if env:
-        return Path(env)
-    return Path(__file__).resolve().parent.parent / "data" / "datasets"
-
-
-def _read_csv_candles(path: Path) -> list[dict]:
-    """Parse a CSV into candle dicts, tolerating both upper- and lowercase headers."""
-    def pick(row: dict, *keys: str):
-        for k in keys:
-            if row.get(k) not in (None, ""):
-                return row[k]
-        return None
-
-    with path.open(newline="") as f:
-        out = []
-        for row in csv.DictReader(f):
-            vol = pick(row, "Volume", "volume")
-            out.append({
-                "date": pick(row, "Date", "date"),
-                "open": float(pick(row, "Open", "open")),
-                "high": float(pick(row, "High", "high")),
-                "low": float(pick(row, "Low", "low")),
-                "close": float(pick(row, "Close", "close")),
-                "volume": int(float(vol)) if vol is not None else 0,
-            })
-        return out
-
+# Implemented in api.datasets; aliases kept for backward-compat within this module.
 
 def _list_datasets() -> list[dict]:
-    """Enumerate available CSV datasets with light metadata. Missing dir → []."""
-    data_dir = _data_dir()
-    if not data_dir.is_dir():
-        return []
-    datasets = []
-    for path in sorted(data_dir.glob("*.csv")):
-        try:
-            candles = _read_csv_candles(path)
-        except Exception:
-            continue  # skip unparseable files rather than failing the whole list
-        if not candles:
-            continue
-        datasets.append({
-            "name": path.name,
-            "symbol": path.stem,
-            "rows": len(candles),
-            "start": candles[0]["date"],
-            "end": candles[-1]["date"],
-        })
-    return datasets
+    return _list_datasets_impl()
 
 
 def _load_dataset(name: str) -> list[dict]:
-    """Load a named dataset's candles, guarding against path traversal."""
-    safe = os.path.basename(name)  # strip any directory components
-    if safe != name or not safe:
-        raise HTTPException(status_code=422, detail=f"invalid dataset name: {name!r}")
-    path = _data_dir() / safe
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"dataset not found: {name!r}")
-    return _read_csv_candles(path)
+    return load_dataset(name)
 
 
 def _resolve_asset_candles(asset: AssetIn) -> list[dict]:
@@ -594,3 +535,60 @@ async def get_run(run_id: int):
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+# ─── Trading (dry-run loop) ───────────────────────────────────────────────────
+
+class TradePlanItem(BaseModel):
+    dataset: str
+    strategy: StrategyParams
+    cash_allocation: float = Field(gt=0, description="Cash to allocate to this position")
+
+
+class TradeTickRequest(BaseModel):
+    plan_id: str = Field(default="default", description="Logical plan identifier for ledger isolation")
+    items: list[TradePlanItem] = Field(min_length=1)
+
+
+@app.post("/trade/tick")
+async def trade_tick(req: TradeTickRequest):
+    """Run one tick of the dry-run trading loop.
+
+    For each plan item: loads the dataset, asks the strategy for its latest
+    signal, checks the position ledger for existing exposure, and emits an
+    order intent (BUY / SELL / nothing) via DryRunBroker. All intents are
+    logged to the order_intents table and positions are updated accordingly.
+    Re-posting with the same state is idempotent (no duplicate BUY while long).
+    """
+    from api.broker import DryRunBroker
+    from api import trading
+
+    _require_engine()
+    broker = DryRunBroker()
+
+    resolved = []
+    for item in req.items:
+        candles = _load_dataset(item.dataset)
+        symbol = item.dataset.removesuffix(".csv").upper()
+        strategy_key = json.dumps(json.loads(item.strategy.model_dump_json()), sort_keys=True)
+        resolved.append({
+            "symbol": symbol,
+            "strategy_json": item.strategy.model_dump_json(),
+            "strategy_key": strategy_key,
+            "cash_allocation": item.cash_allocation,
+            "candles": candles,
+        })
+
+    return await trading.run_tick(req.plan_id, resolved, broker)
+
+
+@app.get("/trade/intents")
+async def trade_intents(plan_id: str | None = None, limit: int = 50):
+    """List recorded order intents, most recent first."""
+    return {"intents": await db.list_intents(plan_id=plan_id, limit=limit)}
+
+
+@app.get("/trade/positions")
+async def trade_positions(plan_id: str | None = None):
+    """List current position ledger entries."""
+    return {"positions": await db.list_positions(plan_id=plan_id)}
