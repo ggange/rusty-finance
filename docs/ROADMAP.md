@@ -144,11 +144,12 @@ The goal: a daily loop that turns a strategy signal into a real (initially paper
 order, with the state and safety a live system needs. Gated hard behind paper
 trading — see guiding principles 5 and 6.
 
-- **Broker abstraction + dry-run loop.** A `Broker` trait/interface so the engine
-  doesn't know paper from live. First adapter: a paper/sandbox broker (e.g.
-  Alpaca) in **dry-run** — compute and *log* intended orders without sending them.
-  This validates the whole data→signal→order-intent→persistence loop with zero
-  financial risk and sizes the rest of the work. Smallest valuable first step.
+- ✅ **Broker abstraction + dry-run loop.** `latest_signal` Rust primitive
+  (PyO3) + `DryRunBroker` + idempotent position ledger (`positions` +
+  `order_intents` tables) + `POST /trade/tick` API endpoint. The whole
+  data→signal→order-intent→persistence loop runs with zero financial risk;
+  re-ticking while already long is a no-op. 18 tests green. Committed
+  `<SHA-placeholder>`.
 - **Live data + scheduler.** A scheduled job that refreshes bars into the catalog
   (extend `scripts/fetch_data.py`) and runs the strategy on the *latest* bar to
   emit a target signal. Move from file-replay to a wall-clock loop.
