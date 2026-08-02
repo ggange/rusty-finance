@@ -219,10 +219,55 @@ Rejected orders are written to the intent log with a `rejected: <reason>` status
 and leave the position ledger untouched, so a blocked trade is auditable rather
 than invisible. Rejections don't consume the daily order budget.
 
-> ⚠️ **An unconfigured install is permissive** — no limits stored means
-> unlimited. That is tolerable while the only broker is `DryRunBroker`, and the
-> API logs a warning on every boot when no global limits are set. Setting global
-> limits is a hard prerequisite before any real broker is connected.
+**Fail-closed for live brokers.** Every broker declares `is_live`. While it is
+False (`DryRunBroker`, `SimulatedPaperBroker`) an unconfigured install stays
+permissive and the API just warns on boot. The moment a broker reports
+`is_live = True`, that inverts: `max_position_value` and `max_daily_loss` must
+both be configured or **every order is refused, in both directions** — one
+bounds a single mistake, the other bounds a bad day. `max_daily_orders` is a
+runaway-loop guard rather than a capital limit, so it stays optional.
+
+## Order Lifecycle & Reconciliation
+
+A venue accepts an order and then fills it over time — partially, or not at all.
+So `Broker.submit` returns a `BrokerOrder` carrying `status`, `filled_qty` and
+`avg_fill_price`, not a status string.
+
+**The ledger follows what actually filled, never what was requested.** A 25 %
+fill on a 200-share order records 100 shares, at the fill price rather than the
+signal price. Orders that the venue hasn't finished with are re-polled at the
+start of the next tick (`sync_open_orders`) and any newly filled quantity is
+topped up, so a partial that later completes doesn't get double-counted.
+
+| Status | Meaning |
+|--------|---------|
+| `accepted` | At the venue, nothing filled yet |
+| `partially_filled` | Some quantity filled; still open |
+| `filled` | Complete — terminal |
+| `rejected` | Refused by the venue — terminal, ledger untouched |
+| `canceled` | Terminal |
+
+```bash
+curl "localhost:8000/trade/orders?plan_id=paper-rsi"
+curl "localhost:8000/trade/orders?plan_id=paper-rsi&open_only=true"
+curl "localhost:8000/trade/reconcile?plan_id=paper-rsi"
+```
+
+Reconciliation compares venue-reported holdings against our ledger per symbol,
+over the *union* of both sets — a position held on only one side is drift, not
+an omission. It runs automatically on every tick, because drift means our record
+of reality is wrong and every decision made from it is suspect.
+
+`SimulatedPaperBroker` models partial fills, rejections and adverse slippage so
+the lifecycle can be exercised before any vendor is chosen:
+
+```python
+SimulatedPaperBroker(fill_ratio=0.4, reject_symbols={"NVDA"}, slippage=0.001)
+```
+
+> ⚠️ `DryRunBroker` holds its position map in memory, so a fresh process reports
+> an empty venue and `/trade/reconcile` will show drift against a non-empty
+> ledger. That resolves when a persistent adapter replaces it.
 
 ## Troubleshooting
 

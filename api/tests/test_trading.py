@@ -101,12 +101,22 @@ def test_decide_hold_is_noop():
 
 # ─── DryRunBroker ─────────────────────────────────────────────────────────────
 
-def test_dryrun_broker_returns_dry_run():
+def test_dryrun_broker_fills_completely():
     from api.broker import DryRunBroker, OrderIntent
     broker = DryRunBroker()
     intent = OrderIntent(symbol="X", side="buy", qty=1.0, price=100.0, reason="test", strategy="s")
-    status = asyncio.run(broker.submit(intent))
-    assert status == "dry_run"
+    order = asyncio.run(broker.submit(intent))
+
+    assert order.status == "filled"
+    assert order.filled_qty == 1.0
+    assert order.avg_fill_price == 100.0
+    assert order.is_terminal
+
+
+def test_dryrun_broker_is_not_live():
+    """is_live gates the fail-closed risk check, so it must be honest."""
+    from api.broker import DryRunBroker
+    assert DryRunBroker().is_live is False
 
 
 def test_dryrun_broker_never_raises():
@@ -157,7 +167,7 @@ def test_tick_buy_signal_creates_intent(client):
     assert r["signal"] == "buy"
     assert r["intent"] is not None
     assert r["intent"]["side"] == "buy"
-    assert r["intent"]["status"] == "dry_run"
+    assert r["intent"]["status"] == "filled"
 
     # position should be recorded
     positions = body["positions"]
@@ -258,4 +268,4 @@ def test_intents_after_tick(client):
     intents = client.get("/trade/intents").json()["intents"]
     assert len(intents) == 1
     assert intents[0]["side"] == "buy"
-    assert intents[0]["status"] == "dry_run"
+    assert intents[0]["status"] == "filled"

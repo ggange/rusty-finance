@@ -42,6 +42,24 @@ CREATE TABLE IF NOT EXISTS order_intents (
     reason     TEXT NOT NULL,
     status     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS orders (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    plan_id         TEXT NOT NULL,
+    symbol          TEXT NOT NULL,
+    strategy        TEXT NOT NULL,
+    side            TEXT NOT NULL,
+    qty             REAL NOT NULL,
+    broker          TEXT NOT NULL,
+    broker_order_id TEXT,
+    status          TEXT NOT NULL,
+    filled_qty      REAL NOT NULL DEFAULT 0,
+    avg_fill_price  REAL NOT NULL DEFAULT 0,
+    reason          TEXT,
+    intent_id       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_orders_open ON orders (plan_id, status);
 CREATE TABLE IF NOT EXISTS risk_limits (
     plan_id            TEXT PRIMARY KEY,
     max_position_value REAL,
@@ -216,6 +234,118 @@ async def last_run_of_kind(kind: str) -> dict | None:
         "config": json.loads(row["config"]),
         "result": json.loads(row["result"]),
     }
+
+
+# ─── Order lifecycle ──────────────────────────────────────────────────────────
+#
+# An intent is what we decided to do; an order is what the venue was told and
+# what it actually did. They're separate tables because a rejected intent never
+# becomes an order, and an order can outlive the tick that created it.
+
+OPEN_ORDER_STATUSES = ("accepted", "partially_filled")
+
+
+async def record_order(
+    plan_id: str,
+    symbol: str,
+    strategy: str,
+    side: str,
+    qty: float,
+    broker: str,
+    status: str,
+    broker_order_id: str | None = None,
+    filled_qty: float = 0.0,
+    avg_fill_price: float = 0.0,
+    reason: str | None = None,
+    intent_id: int | None = None,
+) -> int:
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO orders
+              (created_at, updated_at, plan_id, symbol, strategy, side, qty, broker,
+               broker_order_id, status, filled_qty, avg_fill_price, reason, intent_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (ts, ts, plan_id, symbol, strategy, side, qty, broker, broker_order_id,
+             status, filled_qty, avg_fill_price, reason, intent_id),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def update_order_state(
+    order_id: int,
+    status: str,
+    filled_qty: float,
+    avg_fill_price: float,
+    reason: str | None = None,
+) -> None:
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute(
+            """
+            UPDATE orders
+               SET status=?, filled_qty=?, avg_fill_price=?, reason=?, updated_at=?
+             WHERE id=?
+            """,
+            (status, filled_qty, avg_fill_price, reason, ts, order_id),
+        )
+        await db.commit()
+
+
+async def list_orders(plan_id: str | None = None, limit: int = 50) -> list[dict]:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        if plan_id is not None:
+            cur = await db.execute(
+                "SELECT * FROM orders WHERE plan_id=? ORDER BY id DESC LIMIT ?",
+                (plan_id, limit),
+            )
+        else:
+            cur = await db.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def list_open_orders(plan_id: str | None = None) -> list[dict]:
+    """Orders the venue hasn't finished with — these need re-polling each tick."""
+    await init_db()
+    placeholders = ",".join("?" * len(OPEN_ORDER_STATUSES))
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        if plan_id is not None:
+            cur = await db.execute(
+                f"SELECT * FROM orders WHERE status IN ({placeholders}) AND plan_id=? ORDER BY id",
+                (*OPEN_ORDER_STATUSES, plan_id),
+            )
+        else:
+            cur = await db.execute(
+                f"SELECT * FROM orders WHERE status IN ({placeholders}) ORDER BY id",
+                OPEN_ORDER_STATUSES,
+            )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def ledger_by_symbol(plan_id: str | None = None) -> dict[str, float]:
+    """Our own net quantity per symbol, aggregated across strategies.
+
+    Broker positions are per symbol, but our ledger is keyed per
+    (plan, symbol, strategy) — reconciliation compares at the symbol level.
+    """
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        if plan_id is not None:
+            cur = await db.execute(
+                "SELECT symbol, SUM(qty) FROM positions WHERE plan_id=? GROUP BY symbol",
+                (plan_id,),
+            )
+        else:
+            cur = await db.execute("SELECT symbol, SUM(qty) FROM positions GROUP BY symbol")
+        return {row[0]: float(row[1] or 0.0) for row in await cur.fetchall()}
 
 
 # ─── Risk limits & kill switch ────────────────────────────────────────────────
