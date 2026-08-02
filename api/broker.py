@@ -12,6 +12,7 @@ carries `filled_qty` and `avg_fill_price` and can be re-polled via `get_order`.
 """
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -150,6 +151,90 @@ class DryRunBroker(Broker):
         return [p for p in self._positions.values() if p["qty"] != 0]
 
 
+class PersistentPaperBroker(Broker):
+    """A simulated venue whose books live in SQLite.
+
+    Process-memory brokers are fine for a single tick but useless for a soak:
+    after a restart the venue would report nothing and reconciliation would
+    scream drift at a perfectly correct ledger. This keeps the venue's own
+    positions and orders in `venue_positions` / `venue_orders`, derived
+    independently of our ledger so the comparison still means something.
+
+    Not live — no money moves — but it behaves like a venue across restarts.
+    """
+
+    name = "paper_sim"
+    is_live = False
+
+    def __init__(self, fill_ratio: float = 1.0, slippage: float = 0.0,
+                 reject_symbols: frozenset[str] | set[str] | None = None) -> None:
+        self.fill_ratio = fill_ratio
+        self.slippage = slippage
+        self.reject_symbols = set(reject_symbols or ())
+
+    async def submit(self, intent: OrderIntent) -> BrokerOrder:
+        import api.db as db
+
+        seq = await db.venue_next_order_seq(self.name)
+        oid = f"{self.name}-{seq}"
+
+        if intent.symbol in self.reject_symbols:
+            order = BrokerOrder(oid, "rejected", reason="symbol rejected by venue")
+            await db.venue_record_order(
+                oid, self.name, intent.symbol, intent.side, intent.qty,
+                order.status, reason=order.reason, signal_price=intent.price,
+            )
+            return order
+
+        filled = intent.qty * self.fill_ratio
+        direction = 1 if intent.side == "buy" else -1
+        price = intent.price * (1 + direction * self.slippage)
+
+        if filled <= 0:
+            status = "accepted"
+        elif filled < intent.qty:
+            status = "partially_filled"
+        else:
+            status = "filled"
+
+        order = BrokerOrder(oid, status, filled_qty=filled,
+                            avg_fill_price=price if filled else 0.0)
+        await db.venue_record_order(
+            oid, self.name, intent.symbol, intent.side, intent.qty, status,
+            filled_qty=filled, avg_fill_price=order.avg_fill_price,
+            signal_price=intent.price,
+        )
+        if filled > 0:
+            await db.venue_apply_fill(self.name, intent.symbol, intent.side, filled, price)
+
+        logger.info(
+            "PAPER-SIM %s %s req=%.4f filled=%.4f @ %.4f (signal %.4f) -> %s",
+            intent.side.upper(), intent.symbol, intent.qty, filled,
+            order.avg_fill_price, intent.price, status,
+        )
+        return order
+
+    async def get_order(self, broker_order_id: str) -> BrokerOrder | None:
+        import api.db as db
+
+        row = await db.venue_get_order(broker_order_id)
+        if row is None:
+            return None
+        return BrokerOrder(
+            broker_order_id=row["broker_order_id"],
+            status=row["status"],
+            filled_qty=row["filled_qty"],
+            avg_fill_price=row["avg_fill_price"],
+            reason=row["reason"],
+            ts=row["updated_at"],
+        )
+
+    async def list_positions(self) -> list[dict]:
+        import api.db as db
+
+        return await db.venue_positions(self.name)
+
+
 class SimulatedPaperBroker(Broker):
     """A configurable stand-in that models the messy parts of a real venue.
 
@@ -207,3 +292,49 @@ class SimulatedPaperBroker(Broker):
 
     async def list_positions(self) -> list[dict]:
         return [p for p in self._positions.values() if p["qty"] != 0]
+
+
+# ─── Selection ────────────────────────────────────────────────────────────────
+
+BROKERS = {
+    "dry_run": DryRunBroker,
+    "paper_sim": PersistentPaperBroker,
+}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number — using %s", name, raw, default)
+        return default
+
+
+def broker_config() -> dict:
+    """Which broker the loop will use, and how it's tuned."""
+    kind = os.getenv("RUSTY_FINANCE_BROKER", "dry_run").strip().lower()
+    if kind not in BROKERS:
+        logger.warning("unknown RUSTY_FINANCE_BROKER=%r — falling back to dry_run", kind)
+        kind = "dry_run"
+    return {
+        "kind": kind,
+        "slippage": _env_float("RUSTY_FINANCE_BROKER_SLIPPAGE", 0.0),
+        "fill_ratio": _env_float("RUSTY_FINANCE_BROKER_FILL_RATIO", 1.0),
+    }
+
+
+def make_broker() -> Broker:
+    """Build the configured broker.
+
+    Every code path that submits orders goes through here, so switching venues
+    is one environment variable rather than an edit in several places.
+    """
+    cfg = broker_config()
+    if cfg["kind"] == "paper_sim":
+        return PersistentPaperBroker(
+            fill_ratio=cfg["fill_ratio"], slippage=cfg["slippage"]
+        )
+    return DryRunBroker()

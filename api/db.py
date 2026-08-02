@@ -60,6 +60,28 @@ CREATE TABLE IF NOT EXISTS orders (
     intent_id       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_orders_open ON orders (plan_id, status);
+CREATE TABLE IF NOT EXISTS venue_positions (
+    broker     TEXT NOT NULL,
+    symbol     TEXT NOT NULL,
+    qty        REAL NOT NULL DEFAULT 0,
+    avg_price  REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (broker, symbol)
+);
+CREATE TABLE IF NOT EXISTS venue_orders (
+    broker_order_id TEXT PRIMARY KEY,
+    broker          TEXT NOT NULL,
+    symbol          TEXT NOT NULL,
+    side            TEXT NOT NULL,
+    qty             REAL NOT NULL,
+    status          TEXT NOT NULL,
+    filled_qty      REAL NOT NULL DEFAULT 0,
+    avg_fill_price  REAL NOT NULL DEFAULT 0,
+    signal_price    REAL,
+    reason          TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS risk_limits (
     plan_id            TEXT PRIMARY KEY,
     max_position_value REAL,
@@ -346,6 +368,136 @@ async def ledger_by_symbol(plan_id: str | None = None) -> dict[str, float]:
         else:
             cur = await db.execute("SELECT symbol, SUM(qty) FROM positions GROUP BY symbol")
         return {row[0]: float(row[1] or 0.0) for row in await cur.fetchall()}
+
+
+# ─── Simulated venue state ────────────────────────────────────────────────────
+#
+# The simulated broker's *own* books, kept separate from our ledger on purpose:
+# reconciliation is only meaningful if the two are independently derived. A real
+# adapter reads these from the venue instead.
+
+async def venue_apply_fill(
+    broker: str, symbol: str, side: str, qty: float, price: float
+) -> None:
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT qty, avg_price FROM venue_positions WHERE broker=? AND symbol=?",
+            (broker, symbol),
+        )
+        row = await cur.fetchone()
+        held = float(row["qty"]) if row else 0.0
+        avg = float(row["avg_price"]) if row else 0.0
+
+        if side == "buy":
+            total = held + qty
+            avg = ((held * avg) + (qty * price)) / total if total > 0 else 0.0
+            held = total
+        else:
+            held = max(0.0, held - qty)
+            if held == 0:
+                avg = 0.0
+
+        await db.execute(
+            """
+            INSERT INTO venue_positions (broker, symbol, qty, avg_price, updated_at)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(broker, symbol) DO UPDATE SET
+                qty=excluded.qty, avg_price=excluded.avg_price, updated_at=excluded.updated_at
+            """,
+            (broker, symbol, held, avg, ts),
+        )
+        await db.commit()
+
+
+async def venue_positions(broker: str) -> list[dict]:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT symbol, qty, avg_price FROM venue_positions "
+            "WHERE broker=? AND qty != 0 ORDER BY symbol",
+            (broker,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def venue_record_order(
+    broker_order_id: str,
+    broker: str,
+    symbol: str,
+    side: str,
+    qty: float,
+    status: str,
+    filled_qty: float = 0.0,
+    avg_fill_price: float = 0.0,
+    signal_price: float | None = None,
+    reason: str | None = None,
+) -> None:
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute(
+            """
+            INSERT INTO venue_orders
+              (broker_order_id, broker, symbol, side, qty, status, filled_qty,
+               avg_fill_price, signal_price, reason, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(broker_order_id) DO UPDATE SET
+                status=excluded.status, filled_qty=excluded.filled_qty,
+                avg_fill_price=excluded.avg_fill_price, reason=excluded.reason,
+                updated_at=excluded.updated_at
+            """,
+            (broker_order_id, broker, symbol, side, qty, status, filled_qty,
+             avg_fill_price, signal_price, reason, ts, ts),
+        )
+        await db.commit()
+
+
+async def venue_get_order(broker_order_id: str) -> dict | None:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM venue_orders WHERE broker_order_id=?", (broker_order_id,)
+        )
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def venue_orders_all(broker: str | None = None) -> list[dict]:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        if broker is not None:
+            cur = await db.execute("SELECT * FROM venue_orders WHERE broker=?", (broker,))
+        else:
+            cur = await db.execute("SELECT * FROM venue_orders")
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def total_realized_pnl(plan_id: str | None = None) -> float:
+    """Sum of realized PnL across all recorded exits."""
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        sql = ("SELECT COALESCE(SUM(COALESCE(realized_pnl, 0)), 0) FROM order_intents "
+               "WHERE status NOT LIKE 'rejected%'")
+        params: tuple = ()
+        if plan_id is not None:
+            sql += " AND plan_id=?"
+            params = (plan_id,)
+        cur = await db.execute(sql, params)
+        return float((await cur.fetchone())[0] or 0.0)
+
+
+async def venue_next_order_seq(broker: str) -> int:
+    """Monotonic per-broker order counter that survives restart."""
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM venue_orders WHERE broker=?", (broker,))
+        return int((await cur.fetchone())[0]) + 1
 
 
 # ─── Risk limits & kill switch ────────────────────────────────────────────────

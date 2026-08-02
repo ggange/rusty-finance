@@ -179,10 +179,31 @@ trading — see guiding principles 5 and 6.
   and a live one with `max_position_value` or `max_daily_loss` unset has every
   order refused in both directions.
 
-- **Real broker adapter.** Implement `Broker` against an actual paper venue
-  (vendor not yet chosen — Alpaca is the obvious first candidate). Needs
-  credentials handling, and `list_positions` backed by the venue rather than
-  process memory so reconciliation survives a restart.
+- ✅ **Broker selection + persistent paper venue.** `make_broker()` is the one
+  place orders are routed from, driven by `RUSTY_FINANCE_BROKER`
+  (`dry_run` | `paper_sim`), with slippage and fill-ratio tunable by env; an
+  unknown name falls back to `dry_run` with a warning rather than failing open.
+  `PersistentPaperBroker` keeps the venue's own books in
+  `venue_positions` / `venue_orders`, derived independently of our ledger, so a
+  restart mid-soak doesn't manufacture phantom drift. Neither shipped broker is
+  live. Endpoint: `GET /trade/broker`.
+
+- ✅ **Soak reporting.** `GET /trade/soak` compares realized fills against the
+  signal price the backtester would have assumed, in basis points, signed so
+  positive always means "worse than the backtest assumed" for both sides — plus
+  fill rate, rejections and realized PnL. This is principle 5 made measurable.
+  24 new tests (216 Python total).
+
+  Validated by replaying 90 trading days of MSFT + NVDA (RSI-14, 8 bps
+  configured slippage) through the live loop: 22 orders, 100 % fill rate, mean
+  slippage measured at exactly 8.00 bps, **zero reconciliation drift across all
+  90 ticks**, ledger and venue agreeing at the end.
+
+- **Real broker adapter.** (Vendor deliberately deferred 2026-08-02 — see
+  decision log.) Implement `Broker` against an actual paper venue when the
+  simulated soak has shown the loop is stable. Needs credentials handling and
+  `list_positions` backed by the venue. Setting `is_live = True` automatically
+  engages the fail-closed risk check.
 - ✅ **Risk guardrails + kill switch.** `api/risk.py` is the single chokepoint
   every order passes through before reaching a broker. Limits (`max_position_value`,
   `max_daily_loss`, `max_daily_orders`) are stored per plan and layered
@@ -272,6 +293,17 @@ Was Horizon 4. Stretch ideas, pursued only if the project wants to go further:
   were pulled out of the deferred horizons into Horizon 3 as hard prerequisites,
   ahead of any live order. "Fill at close" and per-asset independence are fine for
   research but must be understood as simplifications before trading on them.
+- **Vendor deferred, soak started on the simulator (2026-08-02).** With the
+  order lifecycle, guardrails and reconciliation done, the next step was a real
+  broker adapter — but choosing a vendor commits to credentials, an account and
+  an API shape, and none of that is needed to learn whether the *loop* is
+  stable. So the soak starts against `PersistentPaperBroker` with realistic
+  slippage. It validates loop stability, the scheduler, guardrails,
+  reconciliation and the ledger over calendar time; it explicitly does **not**
+  validate real fills, venue rejections or true slippage. Those need a real
+  venue, and the honest reading is that the simulated soak is a prerequisite
+  for the vendor work, not a substitute for it.
+
 - **Paper-first, not optional.** The backtester's own predictions are validated by
   running the same signals through paper trading and watching them agree. That
   makes a paper soak both a safety gate and the deepest engine-correctness test —

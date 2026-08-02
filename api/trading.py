@@ -297,6 +297,57 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
     }
 
 
+async def soak_report(plan_id: str | None = None) -> dict:
+    """Evidence from the paper soak: did live execution match the backtest?
+
+    Principle 5 says a backtest is only evidence until the same signals have run
+    on paper and agreed. The comparison that matters is per-order: the
+    backtester assumes a fill at the signal price, so the gap between
+    `signal_price` and `avg_fill_price` *is* the modelling error, in basis
+    points. A soak that shows near-zero mean slippage and a high fill rate is
+    the engine validating itself; a persistent adverse skew means the backtest
+    is optimistic and its results should be discounted before risking capital.
+    """
+    orders = await db.list_orders(plan_id=plan_id, limit=100_000)
+    venue = {o["broker_order_id"]: o for o in await db.venue_orders_all()}
+
+    total = len(orders)
+    rejected = [o for o in orders if o["status"] == "rejected"]
+    filled = [o for o in orders if o["filled_qty"] > 0]
+
+    slippages_bps = []
+    for order in filled:
+        v = venue.get(order["broker_order_id"])
+        signal_price = (v or {}).get("signal_price")
+        if not signal_price or not order["avg_fill_price"]:
+            continue
+        # Positive = worse than the backtest assumed, for both sides.
+        direction = 1 if order["side"] == "buy" else -1
+        bps = direction * (order["avg_fill_price"] - signal_price) / signal_price * 10_000
+        slippages_bps.append(bps)
+
+    requested = sum(o["qty"] for o in orders if o["status"] != "rejected")
+    got = sum(o["filled_qty"] for o in orders)
+
+    mean_slip = sum(slippages_bps) / len(slippages_bps) if slippages_bps else None
+    worst_slip = max(slippages_bps) if slippages_bps else None
+
+    return {
+        "plan_id": plan_id,
+        "orders": total,
+        "filled": len(filled),
+        "rejected": len(rejected),
+        "fill_rate": (got / requested) if requested else None,
+        "slippage_bps": {
+            "samples": len(slippages_bps),
+            "mean": mean_slip,
+            "worst": worst_slip,
+            "note": "positive = execution worse than the backtest assumed",
+        },
+        "realized_pnl": await db.total_realized_pnl(plan_id),
+    }
+
+
 async def reconcile(plan_id: str, broker, tolerance: float = 1e-6) -> dict:
     """Compare venue-reported holdings against our own ledger, per symbol.
 
