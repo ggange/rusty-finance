@@ -761,3 +761,28 @@ async def trade_intents(plan_id: str | None = None, limit: int = 50):
 async def trade_positions(plan_id: str | None = None):
     """List current position ledger entries."""
     return {"positions": await db.list_positions(plan_id=plan_id)}
+
+
+@app.get("/trade/orders")
+async def trade_orders(plan_id: str | None = None, open_only: bool = False, limit: int = 50):
+    """Submitted orders and their fill state, most recent first."""
+    if open_only:
+        return {"orders": await db.list_open_orders(plan_id=plan_id)}
+    return {"orders": await db.list_orders(plan_id=plan_id, limit=limit)}
+
+
+@app.get("/trade/reconcile")
+async def trade_reconcile(plan_id: str = "default"):
+    """Compare broker-reported holdings against our ledger for one plan.
+
+    Drift means our record of reality is wrong, so every decision made from it
+    is suspect. Also run automatically on every tick.
+
+    Note: DryRunBroker holds its position map in memory, so a fresh process
+    reports an empty venue — drift here is expected until a persistent adapter
+    replaces it.
+    """
+    from api.broker import DryRunBroker
+    from api import trading
+
+    return await trading.reconcile(plan_id, DryRunBroker())

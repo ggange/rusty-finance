@@ -161,10 +161,28 @@ trading — see guiding principles 5 and 6.
   / next run / last run; `POST /trade/schedule/run` triggers a cycle manually.
   The catalog was refreshed off its 2024-12-30 stale point to 2026-07-31
   (+396 bars/symbol). 35 new tests (120 Python total).
-- **Order management + reconciliation.** Translate target weights → orders, submit
-  to the paper broker, track fills/rejections/partials, persist positions and
-  cash, and reconcile broker-reported holdings against our own ledger. Most of the
-  real risk lives here.
+- ✅ **Order management + reconciliation.** `Broker.submit` now returns a
+  `BrokerOrder` (`status`, `filled_qty`, `avg_fill_price`) rather than a status
+  string, with `get_order` polling and `list_positions`. Orders persist to an
+  `orders` table separately from intents — a rejected intent never becomes an
+  order, and an order can outlive the tick that created it. **The ledger follows
+  what actually filled, never what was requested**: a partial buy records only
+  the filled shares at the fill price, and `sync_open_orders` tops up newly
+  filled quantity at the start of each tick without double-counting.
+  `reconcile()` compares venue holdings against the ledger per symbol over the
+  union of both sets, and runs on every tick. `SimulatedPaperBroker` models
+  partial fills, rejections and adverse slippage so all of this is exercised
+  before a vendor is chosen. Endpoints: `GET /trade/orders`,
+  `GET /trade/reconcile`. 31 new tests (192 Python total).
+
+  The fail-closed gap flagged above is now closed: brokers declare `is_live`,
+  and a live one with `max_position_value` or `max_daily_loss` unset has every
+  order refused in both directions.
+
+- **Real broker adapter.** Implement `Broker` against an actual paper venue
+  (vendor not yet chosen — Alpaca is the obvious first candidate). Needs
+  credentials handling, and `list_positions` backed by the venue rather than
+  process memory so reconciliation survives a restart.
 - ✅ **Risk guardrails + kill switch.** `api/risk.py` is the single chokepoint
   every order passes through before reaching a broker. Limits (`max_position_value`,
   `max_daily_loss`, `max_daily_orders`) are stored per plan and layered

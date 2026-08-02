@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -74,11 +75,93 @@ def decide(
     return None  # hold
 
 
-def realized_pnl(intent: OrderIntent, position: dict | None) -> float | None:
-    """Realized PnL for an exit, or None for an entry (which realizes nothing)."""
+def realized_pnl(intent: OrderIntent, position: dict | None, order=None) -> float | None:
+    """Realized PnL for an exit, or None for an entry (which realizes nothing).
+
+    Computed from the *filled* quantity and price when an order is supplied, so
+    a partial exit realizes only the part that actually sold.
+    """
     if intent.side != "sell" or not position:
         return None
-    return (intent.price - position["avg_price"]) * intent.qty
+    qty = order.filled_qty if order is not None else intent.qty
+    price = order.avg_fill_price if order is not None and order.filled_qty else intent.price
+    if qty <= 0:
+        return None
+    return (price - position["avg_price"]) * qty
+
+
+async def apply_fill_to_ledger(
+    plan_id: str,
+    symbol: str,
+    strategy_key: str,
+    side: str,
+    position: dict | None,
+    order,
+) -> None:
+    """Move the position ledger by what the venue actually filled.
+
+    A rejected or unfilled order leaves the ledger exactly as it was; a partial
+    buy records only the filled shares, and a partial sell leaves the remainder
+    still held.
+    """
+    if order.filled_qty <= 0:
+        return
+
+    held = position["qty"] if position else 0.0
+
+    if side == "buy":
+        total = held + order.filled_qty
+        prior_cost = held * (position["avg_price"] if position else 0.0)
+        avg = (prior_cost + order.filled_qty * order.avg_fill_price) / total
+        await db.upsert_position(plan_id, symbol, strategy_key, total, avg)
+    else:
+        remaining = max(0.0, held - order.filled_qty)
+        avg = position["avg_price"] if (position and remaining > 0) else 0.0
+        await db.upsert_position(plan_id, symbol, strategy_key, remaining, avg)
+
+
+async def sync_open_orders(plan_id: str, broker) -> list[dict]:
+    """Re-poll orders the venue hasn't finished with and fold in any new fills.
+
+    Without this, a partially filled order would stay partial in our records
+    forever even after the venue completed it.
+    """
+    synced = []
+    for row in await db.list_open_orders(plan_id):
+        if not row["broker_order_id"]:
+            continue
+        latest = await broker.get_order(row["broker_order_id"])
+        if latest is None or (
+            latest.status == row["status"] and latest.filled_qty == row["filled_qty"]
+        ):
+            continue
+
+        newly_filled = latest.filled_qty - row["filled_qty"]
+        await db.update_order_state(
+            row["id"], latest.status, latest.filled_qty, latest.avg_fill_price, latest.reason
+        )
+        if newly_filled > 0:
+            position = await db.get_position(plan_id, row["symbol"], row["strategy"])
+            delta = SimpleFill(newly_filled, latest.avg_fill_price)
+            await apply_fill_to_ledger(
+                plan_id, row["symbol"], row["strategy"], row["side"], position, delta
+            )
+        synced.append({
+            "order_id": row["id"],
+            "symbol": row["symbol"],
+            "from": row["status"],
+            "to": latest.status,
+            "newly_filled": newly_filled,
+        })
+    return synced
+
+
+@dataclass
+class SimpleFill:
+    """Just the incremental part of a fill, shaped for apply_fill_to_ledger."""
+
+    filled_qty: float
+    avg_fill_price: float
 
 
 async def resolve_plan_limits(plan_id: str) -> dict:
@@ -109,6 +192,10 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
     kill_switch = await db.get_kill_switch()
     today = datetime.now(timezone.utc).date().isoformat()
 
+    # Catch up on anything the venue finished since the last tick before
+    # deciding anything new — otherwise we'd decide against a stale position.
+    synced = await sync_open_orders(plan_id, broker)
+
     for item in items:
         symbol = item["symbol"]
         strategy_key = item["strategy_key"]
@@ -136,12 +223,17 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
                 limits=limits,
                 stats=stats,
                 kill_switch=kill_switch,
+                require_limits=broker.is_live,
             )
 
-            pnl = realized_pnl(intent, position) if decision.allowed else None
-            status = await broker.submit(intent) if decision.allowed else decision.status
+            order = await broker.submit(intent) if decision.allowed else None
+            status = order.status if order else decision.status
 
-            await db.record_intent(
+            # The ledger follows what actually *executed*, never what we asked
+            # for — a partial fill leaves a partial position.
+            pnl = realized_pnl(intent, position, order) if order else None
+
+            intent_id = await db.record_intent(
                 plan_id=plan_id,
                 symbol=symbol,
                 strategy=strategy_key,
@@ -154,13 +246,24 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
                 realized_pnl=pnl,
             )
 
-            # A rejected order must leave the ledger untouched — the position is
-            # whatever it was before we tried.
-            if decision.allowed:
-                if intent.side == "buy":
-                    await db.upsert_position(plan_id, symbol, strategy_key, intent.qty, intent.price)
-                else:
-                    await db.upsert_position(plan_id, symbol, strategy_key, 0.0, 0.0)
+            if order is not None:
+                await db.record_order(
+                    plan_id=plan_id,
+                    symbol=symbol,
+                    strategy=strategy_key,
+                    side=intent.side,
+                    qty=intent.qty,
+                    broker=broker.name,
+                    status=order.status,
+                    broker_order_id=order.broker_order_id,
+                    filled_qty=order.filled_qty,
+                    avg_fill_price=order.avg_fill_price,
+                    reason=order.reason,
+                    intent_id=intent_id,
+                )
+                await apply_fill_to_ledger(
+                    plan_id, symbol, strategy_key, intent.side, position, order
+                )
 
             intent_dict = {
                 "side": intent.side,
@@ -171,6 +274,7 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
                 "allowed": decision.allowed,
                 "rejected_reason": decision.reason,
                 "realized_pnl": pnl,
+                "order": order.to_dict() if order else None,
             }
 
         results.append({
@@ -188,4 +292,38 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
         "positions": positions,
         "limits": limits,
         "kill_switch": kill_switch,
+        "synced_orders": synced,
+        "reconciliation": await reconcile(plan_id, broker),
+    }
+
+
+async def reconcile(plan_id: str, broker, tolerance: float = 1e-6) -> dict:
+    """Compare venue-reported holdings against our own ledger, per symbol.
+
+    Drift means our record of reality is wrong, which makes every subsequent
+    decision suspect — so it's reported on every tick rather than on request
+    only. Symbols held on one side and not the other are drift too, not
+    omissions, so the comparison runs over the union of both sets.
+    """
+    ours = await db.ledger_by_symbol(plan_id)
+    theirs = {p["symbol"]: float(p["qty"]) for p in await broker.list_positions()}
+
+    drift = []
+    for symbol in sorted(set(ours) | set(theirs)):
+        our_qty = ours.get(symbol, 0.0)
+        their_qty = theirs.get(symbol, 0.0)
+        delta = their_qty - our_qty
+        if abs(delta) > tolerance:
+            drift.append({
+                "symbol": symbol,
+                "ledger_qty": our_qty,
+                "broker_qty": their_qty,
+                "delta": delta,
+            })
+
+    return {
+        "broker": broker.name,
+        "in_sync": not drift,
+        "checked": len(set(ours) | set(theirs)),
+        "drift": drift,
     }

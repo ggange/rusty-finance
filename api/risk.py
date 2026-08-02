@@ -15,14 +15,23 @@ Two deliberate asymmetries, both in the direction of safety:
   exit can be blocked, and it is always a deliberate human action.
 
 Limits resolve per-plan first, then fall back to the global row. A limit of
-None means unlimited, which is also what an absent row means — so a fresh
-install is permissive by default and becomes safe the moment limits are set.
-Callers that need a floor should set global limits at deploy time.
+None means unlimited, which is also what an absent row means.
+
+**Fail-closed for live brokers.** An unconfigured install is permissive, which
+is fine while nothing can move money. The moment a broker reports `is_live`,
+that inverts: `require_limits=True` makes a missing capital-safety limit a
+rejection rather than a licence. `max_position_value` and `max_daily_loss` are
+both required — one bounds a single mistake, the other bounds a bad day.
+`max_daily_orders` is a runaway-loop guard, not a capital limit, so it stays
+optional.
 """
 
 from dataclasses import dataclass
 
 LIMIT_FIELDS = ("max_position_value", "max_daily_loss", "max_daily_orders")
+
+# Limits that must be configured before a live broker may be used at all.
+REQUIRED_FOR_LIVE = ("max_position_value", "max_daily_loss")
 
 
 @dataclass(frozen=True)
@@ -59,16 +68,29 @@ def evaluate(
     limits: dict,
     stats: dict,
     kill_switch: dict | None = None,
+    require_limits: bool = False,
 ) -> Decision:
     """Decide whether one order may be submitted.
 
     `stats` is the plan's activity so far today: {"orders", "realized_pnl"}.
+    `require_limits` should be True whenever the target broker is live.
     Returns a Decision; the caller records the reason on the intent either way,
     so a rejection is auditable rather than silent.
     """
     if kill_switch and kill_switch.get("engaged"):
         note = kill_switch.get("reason")
         return Decision(False, f"kill switch engaged{f': {note}' if note else ''}")
+
+    # Fail-closed: a live broker with no configured limits is refused outright,
+    # in both directions. This is the one check that also blocks exits, because
+    # an unconfigured live system should not be trading at all.
+    if require_limits:
+        missing = [f for f in REQUIRED_FOR_LIVE if limits.get(f) is None]
+        if missing:
+            return Decision(
+                False,
+                f"live broker requires risk limits; not configured: {', '.join(missing)}",
+            )
 
     # Exits are risk-reducing and are never blocked by a limit.
     if side == "sell":
