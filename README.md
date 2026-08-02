@@ -119,6 +119,86 @@ The backtesting engine expects CSV files with these headers:
 | Close | float | Closing price |
 | Volume | integer | Shares traded |
 
+## Portfolio Weight Optimization
+
+Separate from the parameter sweep (which tunes a *strategy*), this chooses how
+much capital each asset gets. Five objectives, all long-only and fully invested:
+
+| Objective | Solves for | Uses mean returns? |
+|---|---|---|
+| `equal_weight` | 1/n — the baseline that is hard to beat | no |
+| `inverse_volatility` | weight ∝ 1/σ, correlation ignored | no |
+| `min_variance` | lowest portfolio variance | no |
+| `risk_parity` | every asset contributes equal risk | no |
+| `max_sharpe` | highest in-sample Sharpe | **yes** |
+
+### Solve weights on their own
+
+```bash
+curl -s localhost:8000/portfolio/optimize -H 'Content-Type: application/json' -d '{
+  "datasets": ["MSFT.csv", "NVDA.csv", "SPY.csv"],
+  "lookback": 252,
+  "optimizer": {"objective": "risk_parity", "shrinkage": 0.2}
+}'
+```
+
+Returns `weights`, `expected_volatility`, `expected_return`, `risk_contribution`,
+and `uses_expected_returns`. This is a planning aid fitted to the window you
+chose — it is not evidence about the future.
+
+### Backtest a weight policy
+
+Add `weight_policy` to `/portfolio`. **Neither variant can see the future:**
+
+- **`static`** — runs your manual weights for `warmup` bars, solves once on that
+  window, then holds. It deliberately does *not* solve over all history and
+  allocate from day one; that would set the opening allocation from returns that
+  had not happened yet.
+- **`dynamic`** — re-solves at every rebalance date from the trailing `lookback`
+  window. Defaults to monthly rebalancing if you do not configure a schedule,
+  since dynamic weights only take effect at rebalance events.
+
+```bash
+curl -s localhost:8000/portfolio -H 'Content-Type: application/json' -d '{
+  "assets": [
+    {"symbol":"MSFT","source":{"kind":"dataset","name":"MSFT.csv"},"strategy":{"type":"rsi","period":14}},
+    {"symbol":"SPY","source":{"kind":"dataset","name":"SPY.csv"},"strategy":{"type":"rsi","period":14}}
+  ],
+  "initial_cash": 100000,
+  "rebalance": {"frequency": {"kind": "monthly"}},
+  "weight_policy": {
+    "kind": "dynamic",
+    "lookback": 252,
+    "optimizer": {"objective": "min_variance", "shrinkage": 0.2}
+  }
+}'
+```
+
+The response gains `weight_history`: every change of target weights with the
+volatility and risk contribution the optimizer predicted.
+
+### Read the results sceptically
+
+Solving is cheap — 6–15 µs, so 78 monthly re-solves add about 1 ms to a 9 ms run.
+Compute was never the constraint. Estimation error is. On the bundled catalog:
+
+```
+manual (equal)   return 148.60%   vol 19.81%   sharpe 0.80   maxdd -27.55%
+dyn riskparity   return 133.26%   vol 18.80%   sharpe 0.78   maxdd -24.40%
+dyn minvar       return  83.05%   vol 16.84%   sharpe 0.63   maxdd -21.65%
+dyn maxsharpe    return 193.02%   vol 25.36%   sharpe 0.77   maxdd -34.02%
+```
+
+Min-variance did what it promises: lowest volatility and shallowest drawdown.
+Max-Sharpe optimized for Sharpe and delivered a *worse* one than equal weight
+(0.77 vs 0.80) with the deepest drawdown — it chased trailing means that did not
+persist. `shrinkage` (toward the diagonal) and `max_weight` (a position cap) both
+exist to damp exactly that. Reproduce the table with:
+
+```bash
+cargo run --release -p backtesting --example optimize_bench
+```
+
 ## Market Data
 
 Datasets live in `data/datasets/` as one CSV per symbol. Two ways to populate them:
