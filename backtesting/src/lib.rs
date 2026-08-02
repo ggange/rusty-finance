@@ -35,6 +35,7 @@ pub mod engine;
 pub mod portfolio;
 pub mod portfolio_backtest;
 pub mod metrics;
+pub mod optimize;
 pub mod risk;
 pub mod sweep;
 pub mod walkforward;

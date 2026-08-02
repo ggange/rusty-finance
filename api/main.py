@@ -194,6 +194,58 @@ class RebalanceConfigIn(BaseModel):
     frequency: RebalanceFrequency
 
 
+Objective = Literal[
+    "equal_weight", "inverse_volatility", "min_variance", "risk_parity", "max_sharpe"
+]
+
+#: Objectives that need mean returns, which are far noisier to estimate than
+#: covariance. Surfaced so callers can warn rather than discover it in a drawdown.
+_RETURN_DEPENDENT_OBJECTIVES = {"max_sharpe"}
+
+
+class OptimizerConfigIn(BaseModel):
+    objective: Objective = Field(
+        default="risk_parity",
+        description="What to solve for. Covariance-only objectives are more stable than max_sharpe.",
+    )
+    shrinkage: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description="Covariance shrinkage toward the diagonal. 0 = raw sample, 1 = ignore correlation.",
+    )
+    max_weight: Optional[float] = Field(
+        default=None, gt=0.0, le=1.0, description="Per-position cap; null = uncapped"
+    )
+    max_iter: int = Field(default=500, gt=0, le=100_000)
+    tol: float = Field(default=1e-9, gt=0)
+
+
+class ManualWeightPolicy(BaseModel):
+    kind: Literal["manual"] = "manual"
+
+
+class StaticWeightPolicy(BaseModel):
+    kind: Literal["static"] = "static"
+    optimizer: OptimizerConfigIn = Field(default_factory=OptimizerConfigIn)
+    warmup: int = Field(
+        default=252,
+        ge=2,
+        description="Bars to observe before solving. The solve uses only these, so it cannot see ahead.",
+    )
+
+
+class DynamicWeightPolicy(BaseModel):
+    kind: Literal["dynamic"] = "dynamic"
+    optimizer: OptimizerConfigIn = Field(default_factory=OptimizerConfigIn)
+    lookback: int = Field(
+        default=252, ge=2, description="Trailing bars each re-solve sees"
+    )
+
+
+WeightPolicyIn = Union[ManualWeightPolicy, StaticWeightPolicy, DynamicWeightPolicy]
+
+
 class PortfolioRequest(BaseModel):
     assets: list[AssetIn] = Field(min_length=1)
     initial_cash: float = Field(default=10_000.0, gt=0)
@@ -201,6 +253,14 @@ class PortfolioRequest(BaseModel):
     slippage_pct: float = Field(default=0.0, ge=0, lt=1)
     benchmark_symbol: Optional[str] = Field(default=None, description="Dataset name to use as external benchmark (e.g. 'SPY.csv')")
     rebalance: Optional[RebalanceConfigIn] = Field(default=None, description="Optional periodic or threshold rebalancing")
+    weight_policy: Optional[WeightPolicyIn] = Field(
+        default=None,
+        discriminator="kind",
+        description=(
+            "How target weights are chosen. Omit (or 'manual') to use the weights on each asset. "
+            "'static' solves once after a warm-up; 'dynamic' re-solves at every rebalance date."
+        ),
+    )
     fill_timing: Literal["close", "next_open"] = Field(
         default="next_open",
         description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
@@ -330,6 +390,8 @@ def _portfolio_json(req: PortfolioRequest) -> str:
     envelope: dict = {"assets": assets}
     if req.rebalance is not None:
         envelope["rebalance"] = {"frequency": json.loads(req.rebalance.frequency.model_dump_json())}
+    if req.weight_policy is not None:
+        envelope["weight_policy"] = req.weight_policy.model_dump(mode="json")
     return json.dumps(envelope)
 
 
@@ -414,6 +476,68 @@ async def portfolio(req: PortfolioRequest):
     run_id = await db.save_run("portfolio", req.model_dump(mode="json"), result)
     result["run_id"] = run_id
     return result
+
+
+class OptimizeRequest(BaseModel):
+    """Solve weights across a set of datasets, without running a backtest."""
+
+    datasets: list[str] = Field(
+        min_length=2, description="Dataset names, e.g. ['MSFT.csv', 'NVDA.csv']"
+    )
+    optimizer: OptimizerConfigIn = Field(default_factory=OptimizerConfigIn)
+    lookback: Optional[int] = Field(
+        default=252,
+        ge=2,
+        description="Trailing bars to estimate from. Null uses all available history.",
+    )
+
+
+@app.post("/portfolio/optimize")
+def optimize_portfolio(req: OptimizeRequest):
+    """Solve target weights from price history.
+
+    This is the "what weights should I hold?" question on its own, using each
+    dataset's close-to-close returns. It is a planning aid, not evidence: the
+    weights are fitted to the window you chose and say nothing about the future.
+    To see whether an objective actually helps, run `/portfolio` with a
+    `weight_policy` — that applies the same solver without look-ahead and gives
+    you a realized equity curve to judge.
+    """
+    _require_engine()
+
+    series: list[list[float]] = []
+    symbols: list[str] = []
+    for name in req.datasets:
+        candles = _load_dataset(name)
+        closes = [c["close"] for c in candles]
+        if len(closes) < 2:
+            raise HTTPException(status_code=422, detail=f"dataset {name!r} has too few bars")
+        returns = [
+            closes[i] / closes[i - 1] - 1.0 if closes[i - 1] else 0.0
+            for i in range(1, len(closes))
+        ]
+        if req.lookback is not None:
+            returns = returns[-req.lookback:]
+        series.append(returns)
+        symbols.append(name.rsplit(".", 1)[0])
+
+    shortest = min(len(s) for s in series)
+    if shortest < 2:
+        raise HTTPException(
+            status_code=422, detail="not enough overlapping history to estimate covariance"
+        )
+
+    solution = json.loads(
+        bt.optimize_weights(json.dumps(series), req.optimizer.model_dump_json())
+    )
+    return {
+        "symbols": symbols,
+        "observations": shortest,
+        **solution,
+        # Stated rather than implied: a max-Sharpe solve rests on mean returns,
+        # which are estimated far less reliably than covariance.
+        "uses_expected_returns": req.optimizer.objective in _RETURN_DEPENDENT_OBJECTIVES,
+    }
 
 
 # ─── Sweep request ────────────────────────────────────────────────────────────
