@@ -42,7 +42,27 @@ CREATE TABLE IF NOT EXISTS order_intents (
     reason     TEXT NOT NULL,
     status     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS risk_limits (
+    plan_id            TEXT PRIMARY KEY,
+    max_position_value REAL,
+    max_daily_loss     REAL,
+    max_daily_orders   INTEGER,
+    updated_at         TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kill_switch (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    engaged    INTEGER NOT NULL DEFAULT 0,
+    reason     TEXT,
+    updated_at TEXT NOT NULL
+);
 """
+
+# Columns added after the tables above first shipped. CREATE TABLE IF NOT EXISTS
+# won't add these to a database that already exists, so they're applied
+# explicitly on every init.
+_MIGRATIONS = [
+    ("order_intents", "realized_pnl", "ALTER TABLE order_intents ADD COLUMN realized_pnl REAL"),
+]
 
 
 def _db_path() -> Path:
@@ -54,6 +74,11 @@ async def init_db() -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as conn:
         await conn.executescript(_CREATE_SQL)
+        for table, column, ddl in _MIGRATIONS:
+            cur = await conn.execute(f"PRAGMA table_info({table})")
+            existing = {row[1] for row in await cur.fetchall()}
+            if column not in existing:
+                await conn.execute(ddl)
         await conn.commit()
 
 
@@ -193,6 +218,135 @@ async def last_run_of_kind(kind: str) -> dict | None:
     }
 
 
+# ─── Risk limits & kill switch ────────────────────────────────────────────────
+#
+# Limits are stored per plan, with the reserved plan_id GLOBAL_LIMITS acting as
+# the fallback for plans that have none of their own.
+
+GLOBAL_LIMITS = "__global__"
+
+
+def _row_to_limits(row) -> dict:
+    return {
+        "plan_id": row["plan_id"],
+        "max_position_value": row["max_position_value"],
+        "max_daily_loss": row["max_daily_loss"],
+        "max_daily_orders": row["max_daily_orders"],
+        "updated_at": row["updated_at"],
+    }
+
+
+async def set_limits(
+    plan_id: str,
+    max_position_value: float | None = None,
+    max_daily_loss: float | None = None,
+    max_daily_orders: int | None = None,
+) -> dict:
+    """Set (replacing) the risk limits for a plan. None means 'no limit'."""
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute(
+            """
+            INSERT INTO risk_limits
+              (plan_id, max_position_value, max_daily_loss, max_daily_orders, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(plan_id) DO UPDATE SET
+                max_position_value=excluded.max_position_value,
+                max_daily_loss=excluded.max_daily_loss,
+                max_daily_orders=excluded.max_daily_orders,
+                updated_at=excluded.updated_at
+            """,
+            (plan_id, max_position_value, max_daily_loss, max_daily_orders, ts),
+        )
+        await db.commit()
+    return await get_limits_row(plan_id)
+
+
+async def get_limits_row(plan_id: str) -> dict | None:
+    """Raw limits stored for exactly this plan_id (no global fallback)."""
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM risk_limits WHERE plan_id=?", (plan_id,))
+        row = await cur.fetchone()
+    return _row_to_limits(row) if row is not None else None
+
+
+async def list_limits() -> list[dict]:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM risk_limits ORDER BY plan_id")
+        rows = await cur.fetchall()
+    return [_row_to_limits(r) for r in rows]
+
+
+async def delete_limits(plan_id: str) -> bool:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        cur = await db.execute("DELETE FROM risk_limits WHERE plan_id=?", (plan_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def get_kill_switch() -> dict:
+    """Current kill-switch state. Absent row means disengaged."""
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM kill_switch WHERE id=1")
+        row = await cur.fetchone()
+    if row is None:
+        return {"engaged": False, "reason": None, "updated_at": None}
+    return {
+        "engaged": bool(row["engaged"]),
+        "reason": row["reason"],
+        "updated_at": row["updated_at"],
+    }
+
+
+async def set_kill_switch(engaged: bool, reason: str | None = None) -> dict:
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute(
+            """
+            INSERT INTO kill_switch (id, engaged, reason, updated_at)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                engaged=excluded.engaged,
+                reason=excluded.reason,
+                updated_at=excluded.updated_at
+            """,
+            (int(engaged), reason, ts),
+        )
+        await db.commit()
+    return await get_kill_switch()
+
+
+async def daily_stats(plan_id: str, day: str) -> dict:
+    """Orders submitted and realized PnL for a plan on a given UTC date (YYYY-MM-DD).
+
+    Only intents that actually reached the broker count — rejected ones are
+    logged with a "rejected:" status and must not consume the daily budget.
+    """
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        cur = await db.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(COALESCE(realized_pnl, 0)), 0)
+            FROM order_intents
+            WHERE plan_id = ?
+              AND substr(created_at, 1, 10) = ?
+              AND status NOT LIKE 'rejected%'
+            """,
+            (plan_id, day),
+        )
+        count, pnl = await cur.fetchone()
+    return {"orders": int(count or 0), "realized_pnl": float(pnl or 0.0)}
+
+
 # ─── Position ledger ──────────────────────────────────────────────────────────
 
 async def get_position(plan_id: str, symbol: str, strategy: str) -> dict | None:
@@ -256,6 +410,7 @@ async def record_intent(
     signal: str,
     reason: str,
     status: str,
+    realized_pnl: float | None = None,
 ) -> int:
     await init_db()
     ts = datetime.now(timezone.utc).isoformat()
@@ -263,10 +418,12 @@ async def record_intent(
         cur = await db.execute(
             """
             INSERT INTO order_intents
-              (created_at, plan_id, symbol, strategy, side, qty, price, signal, reason, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (created_at, plan_id, symbol, strategy, side, qty, price, signal,
+               reason, status, realized_pnl)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (ts, plan_id, symbol, strategy, side, qty, price, signal, reason, status),
+            (ts, plan_id, symbol, strategy, side, qty, price, signal, reason,
+             status, realized_pnl),
         )
         await db.commit()
         return cur.lastrowid

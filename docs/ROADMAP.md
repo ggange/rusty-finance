@@ -165,8 +165,22 @@ trading — see guiding principles 5 and 6.
   to the paper broker, track fills/rejections/partials, persist positions and
   cash, and reconcile broker-reported holdings against our own ledger. Most of the
   real risk lives here.
-- **Risk guardrails + kill switch.** Max position size, max daily loss, and a
-  manual halt. Non-negotiable before real capital (principle 6).
+- ✅ **Risk guardrails + kill switch.** `api/risk.py` is the single chokepoint
+  every order passes through before reaching a broker. Limits (`max_position_value`,
+  `max_daily_loss`, `max_daily_orders`) are stored per plan and layered
+  field-by-field over a global fallback row; a durable kill switch survives
+  restart. Two deliberate asymmetries: limits constrain entries but never exits
+  (blocking a sell would strand capital), while the kill switch halts everything
+  including exits (a halt that still traded wouldn't be a halt). Rejections are
+  logged with a `rejected:` status, leave the ledger untouched, and don't consume
+  the daily order budget. Endpoints: `GET/POST/DELETE /trade/limits`,
+  `GET/POST /trade/killswitch`. 40 new tests (160 Python total).
+
+  > **Known gap, deliberate.** An unconfigured install is *permissive* — no
+  > limits stored means unlimited, and the API only logs a boot warning. That is
+  > acceptable while `DryRunBroker` is the only broker, but the risk layer must
+  > be made **fail-closed** (refuse to submit when no limits are configured)
+  > as part of connecting a real broker adapter. Do not skip this.
 - **Paper soak.** Run on paper for weeks–months; compare live paper fills against
   what the backtester predicted for the same signals. Divergence is the reality
   check — and the deepest validation the engine can get. This is calendar time

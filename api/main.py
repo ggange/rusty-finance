@@ -17,9 +17,25 @@ except ImportError:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    import logging
+
     from api import scheduler as sched
 
     await db.init_db()
+
+    # An unconfigured install is permissive (no limits == unlimited). That is
+    # tolerable while the only broker is DryRunBroker, but it must not be the
+    # state anything live ever starts in — so say so on every boot.
+    if await db.get_limits_row(db.GLOBAL_LIMITS) is None:
+        logging.getLogger("api.risk").warning(
+            "no global risk limits set — orders are unbounded. "
+            "POST /trade/limits before connecting a real broker."
+        )
+    if (await db.get_kill_switch())["engaged"]:
+        logging.getLogger("api.risk").warning(
+            "kill switch is ENGAGED — no orders will be submitted."
+        )
+
     sched.start_scheduler()
     try:
         yield
@@ -634,6 +650,82 @@ async def delete_trade_plan(plan_id: str):
     if not await db.delete_plan(plan_id):
         raise HTTPException(status_code=404, detail=f"plan not found: {plan_id!r}")
     return {"deleted": plan_id}
+
+
+# ─── Risk guardrails & kill switch ────────────────────────────────────────────
+
+class RiskLimitsRequest(BaseModel):
+    plan_id: str = Field(
+        default=db.GLOBAL_LIMITS,
+        description="Plan these limits apply to; the default sets the global fallback",
+    )
+    max_position_value: Optional[float] = Field(
+        default=None, gt=0, description="Max cash value of a single position (null = unlimited)"
+    )
+    max_daily_loss: Optional[float] = Field(
+        default=None, gt=0, description="Halt new entries once realized loss today reaches this"
+    )
+    max_daily_orders: Optional[int] = Field(
+        default=None, gt=0, description="Max orders submitted per day (runaway-loop guard)"
+    )
+
+
+class KillSwitchRequest(BaseModel):
+    engaged: bool = Field(description="True halts all order submission")
+    reason: Optional[str] = Field(default=None, description="Why it was flipped, for the audit log")
+
+
+@app.get("/trade/limits")
+async def get_trade_limits(plan_id: Optional[str] = None):
+    """List stored limits, or the *effective* limits for one plan.
+
+    Effective limits layer the plan's own row over the global row, which is what
+    the trading loop actually enforces.
+    """
+    if plan_id is None:
+        return {"limits": await db.list_limits()}
+    from api import trading
+
+    return {
+        "plan_id": plan_id,
+        "effective": await trading.resolve_plan_limits(plan_id),
+        "plan": await db.get_limits_row(plan_id),
+        "global": await db.get_limits_row(db.GLOBAL_LIMITS),
+    }
+
+
+@app.post("/trade/limits")
+async def set_trade_limits(req: RiskLimitsRequest):
+    """Set risk limits for a plan (or globally). Omitted fields mean 'no limit'."""
+    return await db.set_limits(
+        req.plan_id,
+        max_position_value=req.max_position_value,
+        max_daily_loss=req.max_daily_loss,
+        max_daily_orders=req.max_daily_orders,
+    )
+
+
+@app.delete("/trade/limits/{plan_id}")
+async def delete_trade_limits(plan_id: str):
+    if not await db.delete_limits(plan_id):
+        raise HTTPException(status_code=404, detail=f"no limits stored for: {plan_id!r}")
+    return {"deleted": plan_id}
+
+
+@app.get("/trade/killswitch")
+async def get_trade_killswitch():
+    return await db.get_kill_switch()
+
+
+@app.post("/trade/killswitch")
+async def set_trade_killswitch(req: KillSwitchRequest):
+    """Engage or release the manual halt.
+
+    While engaged, no order of any side reaches the broker — including exits.
+    The state is stored in SQLite, so it survives an API restart: a halted
+    system stays halted until a human explicitly releases it.
+    """
+    return await db.set_kill_switch(req.engaged, req.reason)
 
 
 # ─── Scheduler ────────────────────────────────────────────────────────────────
