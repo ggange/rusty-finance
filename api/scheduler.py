@@ -8,7 +8,8 @@ runs the existing dry-run tick over it.
 
 Safety notes:
 
-* The broker is still `DryRunBroker`. Nothing here can place a real order.
+* The broker comes from `make_broker()` and is non-live by default. Nothing
+  here can place a real order unless a live adapter is deliberately configured.
 * Holidays need no special handling: the cron fires, the refresh returns no new
   bars, the strategy sees the same last bar it saw yesterday, and `decide()` is
   idempotent — so a holiday tick is a no-op rather than a duplicate order.
@@ -27,7 +28,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 import api.db as db
-from api.broker import DryRunBroker
+from api.broker import make_broker
 from api.datasets import _data_dir
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ async def run_all_plans(refresh: bool | None = None) -> dict:
     if do_refresh and symbols:
         refreshed = await refresh_symbols(symbols)
 
-    broker = DryRunBroker()
+    broker = make_broker()
     plan_results: list[dict] = []
 
     for plan in plans:

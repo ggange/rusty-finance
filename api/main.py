@@ -599,14 +599,14 @@ async def trade_tick(req: TradeTickRequest):
 
     For each plan item: loads the dataset, asks the strategy for its latest
     signal, checks the position ledger for existing exposure, and emits an
-    order intent (BUY / SELL / nothing) via DryRunBroker. All intents are
+    order intent (BUY / SELL / nothing) via the configured broker. All intents are
     logged to the order_intents table and positions are updated accordingly.
     Re-posting with the same state is idempotent (no duplicate BUY while long).
 
     With `items` omitted, the stored plan for `plan_id` is used — the same path
     the scheduler takes.
     """
-    from api.broker import DryRunBroker
+    from api.broker import make_broker
     from api import trading
 
     _require_engine()
@@ -622,7 +622,7 @@ async def trade_tick(req: TradeTickRequest):
             )
         items = stored["items"]
 
-    return await trading.run_tick(req.plan_id, trading.resolve_items(items), DryRunBroker())
+    return await trading.run_tick(req.plan_id, trading.resolve_items(items), make_broker())
 
 
 # ─── Trading plans (what the scheduler runs) ──────────────────────────────────
@@ -771,6 +771,29 @@ async def trade_orders(plan_id: str | None = None, open_only: bool = False, limi
     return {"orders": await db.list_orders(plan_id=plan_id, limit=limit)}
 
 
+@app.get("/trade/broker")
+async def trade_broker():
+    """Which broker the loop is configured to use, and how it's tuned."""
+    from api.broker import broker_config, make_broker
+
+    broker = make_broker()
+    return {**broker_config(), "name": broker.name, "is_live": broker.is_live}
+
+
+@app.get("/trade/soak")
+async def trade_soak(plan_id: str | None = None):
+    """Paper-soak evidence: fill rate, rejections, and realized slippage in bps.
+
+    The backtester assumes a fill at the signal price, so the gap to the actual
+    fill price is the modelling error. Near-zero mean slippage with a high fill
+    rate is the engine validating itself; a persistent adverse skew means the
+    backtest is optimistic (principle 5).
+    """
+    from api import trading
+
+    return await trading.soak_report(plan_id)
+
+
 @app.get("/trade/reconcile")
 async def trade_reconcile(plan_id: str = "default"):
     """Compare broker-reported holdings against our ledger for one plan.
@@ -778,11 +801,11 @@ async def trade_reconcile(plan_id: str = "default"):
     Drift means our record of reality is wrong, so every decision made from it
     is suspect. Also run automatically on every tick.
 
-    Note: DryRunBroker holds its position map in memory, so a fresh process
-    reports an empty venue — drift here is expected until a persistent adapter
-    replaces it.
+    Note: DryRunBroker holds its position map in process memory, so with that
+    broker a fresh process reports an empty venue and drift is expected. Use
+    RUSTY_FINANCE_BROKER=paper_sim for a venue whose books survive restart.
     """
-    from api.broker import DryRunBroker
+    from api.broker import make_broker
     from api import trading
 
-    return await trading.reconcile(plan_id, DryRunBroker())
+    return await trading.reconcile(plan_id, make_broker())

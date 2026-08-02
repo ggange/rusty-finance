@@ -265,9 +265,65 @@ the lifecycle can be exercised before any vendor is chosen:
 SimulatedPaperBroker(fill_ratio=0.4, reject_symbols={"NVDA"}, slippage=0.001)
 ```
 
-> ⚠️ `DryRunBroker` holds its position map in memory, so a fresh process reports
-> an empty venue and `/trade/reconcile` will show drift against a non-empty
-> ledger. That resolves when a persistent adapter replaces it.
+## Choosing a Broker
+
+One environment variable selects the venue; every path that submits orders goes
+through `make_broker()`.
+
+| `RUSTY_FINANCE_BROKER` | Behaviour |
+|------------------------|-----------|
+| `dry_run` *(default)* | Instant complete fills, positions in process memory |
+| `paper_sim` | Simulated venue with **books in SQLite** — survives restart |
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `RUSTY_FINANCE_BROKER_SLIPPAGE` | `0.0` | Fractional adverse slippage (`0.0008` = 8 bps) |
+| `RUSTY_FINANCE_BROKER_FILL_RATIO` | `1.0` | `<1` produces partial fills |
+
+An unrecognised broker name falls back to `dry_run` with a warning rather than
+failing open into something unexpected. Neither shipped broker is live —
+`is_live` is False for both, and `GET /trade/broker` reports what's configured.
+
+Use `paper_sim` for a soak. `dry_run` keeps positions in process memory, so
+after a restart it reports an empty venue and reconciliation shows phantom
+drift against a perfectly correct ledger. `paper_sim` keeps the venue's own
+books in `venue_positions` / `venue_orders`, derived independently of our
+ledger, so the comparison still means something after a bounce.
+
+```bash
+RUSTY_FINANCE_BROKER=paper_sim \
+RUSTY_FINANCE_BROKER_SLIPPAGE=0.0008 \
+  uvicorn api.main:app
+```
+
+## Soak Reporting
+
+Principle 5: a backtest is evidence, not truth, until the same signals have run
+on paper and agreed. `GET /trade/soak` is that comparison.
+
+The backtester assumes a fill at the signal price, so the gap between
+`signal_price` and `avg_fill_price` **is** the modelling error, reported in
+basis points and signed so positive always means "worse than the backtest
+assumed", for both buys and sells.
+
+```bash
+curl "localhost:8000/trade/soak?plan_id=paper-rsi"
+```
+
+```json
+{
+  "orders": 22, "filled": 22, "rejected": 0, "fill_rate": 1.0,
+  "slippage_bps": { "samples": 22, "mean": 8.0, "worst": 8.0,
+                    "note": "positive = execution worse than the backtest assumed" },
+  "realized_pnl": 1420.56
+}
+```
+
+Near-zero mean slippage with a high fill rate is the engine validating itself.
+A persistent adverse skew means the backtest is optimistic and its results
+should be discounted **before** any capital is risked — that judgement is the
+entire point of the soak, and it needs weeks of calendar time that cannot be
+compressed.
 
 ## Troubleshooting
 
