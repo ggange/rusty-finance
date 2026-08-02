@@ -4,6 +4,7 @@ import type {
   FillTiming,
   PortfolioRequest,
   RebalanceConfig,
+  WeightPolicy,
   StrategyMeta,
   StrategyRequest,
   StrategyType,
@@ -53,6 +54,8 @@ export interface PortfolioForm {
   // Rebalancing
   rebalanceConfig: RebalanceConfig | null;
   setRebalanceConfig: (v: RebalanceConfig | null) => void;
+  weightPolicy: WeightPolicy;
+  setWeightPolicy: (v: WeightPolicy) => void;
 
   // Execution timing
   fillTiming: FillTiming;
@@ -97,6 +100,7 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
   const [slippagePct, setSlippagePct] = useState(0);
   const [benchmarkSymbol, setBenchmarkSymbol] = useState<string | null>(null);
   const [rebalanceConfig, setRebalanceConfig] = useState<RebalanceConfig | null>(null);
+  const [weightPolicy, setWeightPolicy] = useState<WeightPolicy>({ kind: "manual" });
   const [fillTiming, setFillTiming] = useState<FillTiming>("next_open");
   const idCounter = useRef(0);
 
@@ -218,8 +222,10 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
     };
     if (benchmarkSymbol) req.benchmark_symbol = benchmarkSymbol;
     if (rebalanceConfig) req.rebalance = rebalanceConfig;
+    // Manual is the API default, so it is omitted rather than sent explicitly.
+    if (weightPolicy.kind !== "manual") req.weight_policy = weightPolicy;
     return req;
-  }, [assets, initialCash, commission, slippagePct, benchmarkSymbol, rebalanceConfig, fillTiming]);
+  }, [assets, initialCash, commission, slippagePct, benchmarkSymbol, rebalanceConfig, weightPolicy, fillTiming]);
 
   const meta = useMemo(() => strategyMeta, [strategyMeta]);
 
@@ -242,6 +248,8 @@ export function usePortfolioForm(strategies: StrategyMeta[]): PortfolioForm {
     setBenchmarkSymbol,
     rebalanceConfig,
     setRebalanceConfig,
+    weightPolicy,
+    setWeightPolicy,
     fillTiming,
     setFillTiming,
     strategyMeta: meta,

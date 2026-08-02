@@ -5,6 +5,7 @@ import { Button } from "../ui/Button";
 import { Field } from "../ui/Field";
 import { Input } from "../ui/Input";
 import { Select } from "../ui/Select";
+import { WeightPolicyControls } from "./WeightPolicyControls";
 import type { PortfolioForm } from "../../state/usePortfolioForm";
 import type { Dataset, FillTiming, RebalanceConfig, StrategyMeta } from "../../types/api";
 
@@ -121,6 +122,14 @@ export function ConfigPanel({
         <RebalancingControls
           value={form.rebalanceConfig}
           onChange={form.setRebalanceConfig}
+        />
+      </Panel>
+
+      <Panel title="Allocation">
+        <WeightPolicyControls
+          value={form.weightPolicy}
+          onChange={form.setWeightPolicy}
+          hasRebalance={form.rebalanceConfig !== null}
         />
       </Panel>
 

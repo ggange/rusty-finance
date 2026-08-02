@@ -3,6 +3,7 @@ import { Panel } from "../ui/Panel";
 import { Spinner } from "../ui/Spinner";
 import { MetricCards } from "./MetricCards";
 import { PortfolioEquityChart } from "./PortfolioEquityChart";
+import { SolvedWeightsPanel } from "./SolvedWeightsPanel";
 import { DrawdownChart } from "./DrawdownChart";
 import { AssetBreakdown } from "./AssetBreakdown";
 import { RiskPanel } from "./RiskPanel";
@@ -98,6 +99,11 @@ export function PortfolioResultsPanel({
       <Panel title="Portfolio drawdown">
         <DrawdownChart equityCurve={result.equity_curve} />
       </Panel>
+
+      <SolvedWeightsPanel
+        symbols={result.assets.map((a) => a.symbol)}
+        history={result.weight_history ?? []}
+      />
 
       <Panel title="Risk analytics">
         <RiskPanel risk={result.risk} />
