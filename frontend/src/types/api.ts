@@ -160,6 +160,64 @@ export interface RebalanceConfig {
   frequency: RebalanceFrequency;
 }
 
+// ─── Weight optimization ────────────────────────────────────────────────────
+// Mirrors backtesting/src/optimize.rs and the WeightPolicy in
+// portfolio_backtest.rs.
+
+export type Objective =
+  | "equal_weight"
+  | "inverse_volatility"
+  | "min_variance"
+  | "risk_parity"
+  | "max_sharpe";
+
+/** Objectives needing mean returns, which estimate far less reliably than covariance. */
+export const RETURN_DEPENDENT_OBJECTIVES: ReadonlySet<Objective> = new Set<Objective>([
+  "max_sharpe",
+]);
+
+export interface OptimizerConfig {
+  objective: Objective;
+  /** Covariance shrinkage toward the diagonal, 0–1. */
+  shrinkage: number;
+  /** Per-position cap in (0, 1]; null = uncapped. */
+  max_weight: number | null;
+}
+
+export type WeightPolicy =
+  | { kind: "manual" }
+  | { kind: "static"; optimizer: OptimizerConfig; warmup: number }
+  | { kind: "dynamic"; optimizer: OptimizerConfig; lookback: number };
+
+export type WeightPolicyKind = WeightPolicy["kind"];
+
+/** One change of target weights during a run. */
+export interface WeightSnapshot {
+  date: string;
+  weights: number[];
+  expected_volatility?: number;
+  risk_contribution?: number[];
+}
+
+export interface OptimizeRequest {
+  datasets: string[];
+  optimizer: OptimizerConfig;
+  /** Trailing bars to estimate from; null uses all history. */
+  lookback: number | null;
+}
+
+export interface OptimizeResponse {
+  symbols: string[];
+  observations: number;
+  weights: number[];
+  expected_volatility: number;
+  expected_return: number;
+  risk_contribution: number[];
+  iterations: number;
+  hit_iteration_limit: boolean;
+  uses_expected_returns: boolean;
+}
+
 export interface PortfolioRequest {
   assets: PortfolioAssetRequest[];
   initial_cash: number;
@@ -167,6 +225,8 @@ export interface PortfolioRequest {
   slippage_pct: number;
   benchmark_symbol?: string;
   rebalance?: RebalanceConfig;
+  /** Omit (or "manual") to use the weight on each asset. */
+  weight_policy?: WeightPolicy;
   fill_timing?: FillTiming;
 }
 
@@ -205,6 +265,8 @@ export interface PortfolioResponse {
   assets: AssetResult[];
   external_benchmark_curve?: EquityPoint[];
   rebalance_dates?: string[];
+  /** Present when a solving weight policy was used; one entry per solve. */
+  weight_history?: WeightSnapshot[];
   run_id?: number;
 }
 

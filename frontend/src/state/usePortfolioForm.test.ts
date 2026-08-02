@@ -179,6 +179,72 @@ describe("usePortfolioForm.buildRequest", () => {
     });
   });
 
+  it("omits weight_policy while weights are manual", () => {
+    // Manual is the API default, so sending it explicitly is noise.
+    const { result } = setup();
+    act(() => {
+      result.current.setAssetSourceDataset(result.current.assets[0].id, "X.csv", CANDLES, "X");
+    });
+
+    expect(result.current.buildRequest()!).not.toHaveProperty("weight_policy");
+  });
+
+  it("sends a static policy with its optimizer settings", () => {
+    const { result } = setup();
+    act(() => {
+      result.current.setAssetSourceDataset(result.current.assets[0].id, "X.csv", CANDLES, "X");
+    });
+    act(() => {
+      result.current.setWeightPolicy({
+        kind: "static",
+        warmup: 120,
+        optimizer: { objective: "min_variance", shrinkage: 0.3, max_weight: 0.4 },
+      });
+    });
+
+    expect(result.current.buildRequest()!.weight_policy).toEqual({
+      kind: "static",
+      warmup: 120,
+      optimizer: { objective: "min_variance", shrinkage: 0.3, max_weight: 0.4 },
+    });
+  });
+
+  it("sends a dynamic policy with its lookback", () => {
+    const { result } = setup();
+    act(() => {
+      result.current.setAssetSourceDataset(result.current.assets[0].id, "X.csv", CANDLES, "X");
+    });
+    act(() => {
+      result.current.setWeightPolicy({
+        kind: "dynamic",
+        lookback: 252,
+        optimizer: { objective: "risk_parity", shrinkage: 0.2, max_weight: null },
+      });
+    });
+
+    const policy = result.current.buildRequest()!.weight_policy;
+    expect(policy).toMatchObject({ kind: "dynamic", lookback: 252 });
+  });
+
+  it("drops the policy again when switched back to manual", () => {
+    const { result } = setup();
+    act(() => {
+      result.current.setAssetSourceDataset(result.current.assets[0].id, "X.csv", CANDLES, "X");
+    });
+    act(() => {
+      result.current.setWeightPolicy({
+        kind: "dynamic",
+        lookback: 60,
+        optimizer: { objective: "risk_parity", shrinkage: 0.2, max_weight: null },
+      });
+    });
+    act(() => {
+      result.current.setWeightPolicy({ kind: "manual" });
+    });
+
+    expect(result.current.buildRequest()!).not.toHaveProperty("weight_policy");
+  });
+
   it("removes an asset by id", () => {
     const { result } = setup();
     act(() => {

@@ -8,6 +8,8 @@ import type {
   KillSwitch,
   LimitsForPlan,
   LimitsListResponse,
+  OptimizeRequest,
+  OptimizeResponse,
   OrdersResponse,
   PortfolioRequest,
   PortfolioResponse,
@@ -107,6 +109,9 @@ export const api = {
   run: (id: number) => request<RunDetail>(`/runs/${id}`),
   walkForward: (body: WalkForwardRequest) =>
     post<WalkForwardResponse>("/walkforward", body),
+  /** Solve weights from price history, without running a backtest. */
+  optimize: (body: OptimizeRequest) =>
+    post<OptimizeResponse>("/portfolio/optimize", body),
 
   // ─── Trading ──────────────────────────────────────────────────────────────
   // Everything under /trade/* drives the live loop. The two calls that can
