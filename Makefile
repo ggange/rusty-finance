@@ -8,7 +8,9 @@ TICKER ?= AAPL
 START  ?= 2020-01-01
 END    ?= 2024-12-31
 
-.PHONY: setup bindings dev test build fetch fetch-all help
+SYMBOLS ?= AAPL MSFT GOOG SPY NVDA
+
+.PHONY: setup bindings dev test build fetch fetch-all refresh help
 
 help:
 	@echo "Usage:"
@@ -19,6 +21,7 @@ help:
 	@echo "  make build          Production frontend build only"
 	@echo "  make fetch          Fetch real OHLCV for one ticker (TICKER=AAPL)"
 	@echo "  make fetch-all      Fetch AAPL MSFT GOOG SPY NVDA for 2020-2024"
+	@echo "  make refresh        Append new bars to existing datasets (SYMBOLS=...)"
 
 setup:
 	@echo "→ Creating Python virtual environment..."
@@ -60,3 +63,7 @@ fetch:
 fetch-all:
 	@if [ ! -f "$(PYTHON)" ]; then echo "ERROR: .venv not found. Run 'make setup' first."; exit 1; fi
 	$(PYTHON) scripts/fetch_data.py AAPL MSFT GOOG SPY NVDA --start $(START) --end $(END)
+
+refresh:
+	@if [ ! -f "$(PYTHON)" ]; then echo "ERROR: .venv not found. Run 'make setup' first."; exit 1; fi
+	$(PYTHON) scripts/fetch_data.py $(SYMBOLS) --incremental

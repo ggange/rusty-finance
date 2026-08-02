@@ -3,7 +3,7 @@
 A living document for the long run. The short-run, actively-worked plan lives in
 issues / the current working session; this file is the map, not the turn-by-turn.
 
-Last updated: 2026-06-23
+Last updated: 2026-08-02
 
 ---
 
@@ -150,9 +150,17 @@ trading — see guiding principles 5 and 6.
   data→signal→order-intent→persistence loop runs with zero financial risk;
   re-ticking while already long is a no-op. 18 tests green. Committed
   `cc05ec9`.
-- **Live data + scheduler.** A scheduled job that refreshes bars into the catalog
-  (extend `scripts/fetch_data.py`) and runs the strategy on the *latest* bar to
-  emit a target signal. Move from file-replay to a wall-clock loop.
+- ✅ **Live data + scheduler.** Incremental fetch (`fetch_incremental` /
+  `make refresh`) appends only bars newer than what's on disk, deduping on date
+  so the trailing bar picks up post-close revisions; a failed fetch never
+  destroys history. Trading plans are now persisted (`trade_plans` table,
+  `POST/GET/DELETE /trade/plans`) because a scheduled run has no request body to
+  read items from. `api/scheduler.py` runs an in-process APScheduler on a
+  mon-fri 16:30 America/New_York cron: refresh every plan symbol, then tick each
+  enabled plan through `DryRunBroker`. `GET /trade/schedule` exposes cron config
+  / next run / last run; `POST /trade/schedule/run` triggers a cycle manually.
+  The catalog was refreshed off its 2024-12-30 stale point to 2026-07-31
+  (+396 bars/symbol). 35 new tests (120 Python total).
 - **Order management + reconciliation.** Translate target weights → orders, submit
   to the paper broker, track fills/rejections/partials, persist positions and
   cash, and reconcile broker-reported holdings against our own ledger. Most of the

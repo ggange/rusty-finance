@@ -17,8 +17,14 @@ except ImportError:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    from api import scheduler as sched
+
     await db.init_db()
-    yield
+    sched.start_scheduler()
+    try:
+        yield
+    finally:
+        sched.shutdown_scheduler()
 
 
 app = FastAPI(
@@ -547,7 +553,28 @@ class TradePlanItem(BaseModel):
 
 class TradeTickRequest(BaseModel):
     plan_id: str = Field(default="default", description="Logical plan identifier for ledger isolation")
+    items: Optional[list[TradePlanItem]] = Field(
+        default=None,
+        description="Items to tick. Omit to use the stored plan with this plan_id.",
+    )
+
+
+class TradePlanRequest(BaseModel):
+    plan_id: str = Field(default="default", description="Logical plan identifier")
     items: list[TradePlanItem] = Field(min_length=1)
+    enabled: bool = Field(default=True, description="Whether the scheduler should run this plan")
+
+
+def _plan_items_to_dicts(items: list[TradePlanItem]) -> list[dict]:
+    """Normalise Pydantic plan items to the plain dicts stored and resolved elsewhere."""
+    return [
+        {
+            "dataset": item.dataset,
+            "strategy": json.loads(item.strategy.model_dump_json()),
+            "cash_allocation": item.cash_allocation,
+        }
+        for item in items
+    ]
 
 
 @app.post("/trade/tick")
@@ -559,27 +586,77 @@ async def trade_tick(req: TradeTickRequest):
     order intent (BUY / SELL / nothing) via DryRunBroker. All intents are
     logged to the order_intents table and positions are updated accordingly.
     Re-posting with the same state is idempotent (no duplicate BUY while long).
+
+    With `items` omitted, the stored plan for `plan_id` is used — the same path
+    the scheduler takes.
     """
     from api.broker import DryRunBroker
     from api import trading
 
     _require_engine()
-    broker = DryRunBroker()
 
-    resolved = []
+    if req.items is not None:
+        items = _plan_items_to_dicts(req.items)
+    else:
+        stored = await db.get_plan(req.plan_id)
+        if stored is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no stored plan {req.plan_id!r} — pass items or create the plan first",
+            )
+        items = stored["items"]
+
+    return await trading.run_tick(req.plan_id, trading.resolve_items(items), DryRunBroker())
+
+
+# ─── Trading plans (what the scheduler runs) ──────────────────────────────────
+
+@app.post("/trade/plans")
+async def create_trade_plan(req: TradePlanRequest):
+    """Create or replace a stored trading plan.
+
+    Datasets are validated eagerly so a plan can't be saved pointing at data
+    that doesn't exist — the scheduler runs unattended and shouldn't discover
+    that at 16:30.
+    """
     for item in req.items:
-        candles = _load_dataset(item.dataset)
-        symbol = item.dataset.removesuffix(".csv").upper()
-        strategy_key = json.dumps(json.loads(item.strategy.model_dump_json()), sort_keys=True)
-        resolved.append({
-            "symbol": symbol,
-            "strategy_json": item.strategy.model_dump_json(),
-            "strategy_key": strategy_key,
-            "cash_allocation": item.cash_allocation,
-            "candles": candles,
-        })
+        _load_dataset(item.dataset)
+    return await db.upsert_plan(req.plan_id, _plan_items_to_dicts(req.items), req.enabled)
 
-    return await trading.run_tick(req.plan_id, resolved, broker)
+
+@app.get("/trade/plans")
+async def list_trade_plans(enabled_only: bool = False):
+    return {"plans": await db.list_plans(enabled_only=enabled_only)}
+
+
+@app.delete("/trade/plans/{plan_id}")
+async def delete_trade_plan(plan_id: str):
+    if not await db.delete_plan(plan_id):
+        raise HTTPException(status_code=404, detail=f"plan not found: {plan_id!r}")
+    return {"deleted": plan_id}
+
+
+# ─── Scheduler ────────────────────────────────────────────────────────────────
+
+@app.get("/trade/schedule")
+async def get_trade_schedule():
+    """Scheduler status: cron config, next fire time, and the last run's summary."""
+    from api import scheduler as sched
+
+    return await sched.schedule_status()
+
+
+@app.post("/trade/schedule/run")
+async def run_trade_schedule(refresh: Optional[bool] = None):
+    """Trigger the scheduled cycle immediately (refresh bars, then tick all enabled plans).
+
+    Pass `refresh=false` to tick against data already on disk — useful for
+    testing the loop without hitting the network.
+    """
+    from api import scheduler as sched
+
+    _require_engine()
+    return await sched.run_all_plans(refresh=refresh)
 
 
 @app.get("/trade/intents")
