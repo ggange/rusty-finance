@@ -1,20 +1,11 @@
 import { useState, useEffect } from "react";
+import { ParamRangeGrid } from "../config/ParamRangeGrid";
+import { Button } from "../ui/Button";
 import { Field } from "../ui/Field";
 import { Panel } from "../ui/Panel";
+import { Select } from "../ui/Select";
+import { METRIC_OPTIONS } from "../../lib/metrics";
 import type { Dataset, ParamRange, StrategyMeta, StrategyType, SweepRequest } from "../../types/api";
-
-const METRIC_OPTIONS = [
-  { value: "sharpe_ratio", label: "Sharpe ratio" },
-  { value: "total_return", label: "Total return" },
-  { value: "cagr", label: "CAGR" },
-  { value: "sortino_ratio", label: "Sortino ratio" },
-  { value: "max_drawdown", label: "Max drawdown (lower is better)" },
-];
-
-const selectClass =
-  "w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
-const inputClass =
-  "w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
 
 interface SweepFormProps {
   strategies: StrategyMeta[];
@@ -90,48 +81,45 @@ export function SweepForm({
       <Panel title="Sweep settings">
         <div className="space-y-3">
           <Field label="Dataset" htmlFor="sweep-dataset">
-            <select
+            <Select
               id="sweep-dataset"
               value={dataset}
               onChange={(e) => setDataset(e.target.value)}
-              className={selectClass}
             >
               {datasets.map((d) => (
                 <option key={d.name} value={d.name}>
                   {d.symbol}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
 
           <Field label="Strategy" htmlFor="sweep-strategy">
-            <select
+            <Select
               id="sweep-strategy"
               value={strategyType}
               onChange={(e) => setStrategyType(e.target.value as StrategyType)}
-              className={selectClass}
             >
               {strategies.map((s) => (
                 <option key={s.type} value={s.type}>
                   {s.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
 
           <Field label="Metric" htmlFor="sweep-metric">
-            <select
+            <Select
               id="sweep-metric"
               value={metric}
               onChange={(e) => setMetric(e.target.value)}
-              className={selectClass}
             >
               {METRIC_OPTIONS.map((m) => (
                 <option key={m.value} value={m.value}>
                   {m.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
         </div>
       </Panel>
@@ -141,51 +129,12 @@ export function SweepForm({
           <p className="mb-3 text-xs text-slate-500">
             Set min = max to fix a parameter. Vary 1 param for a bar chart, 2 for a heatmap.
           </p>
-          <div className="space-y-4">
-            {selectedStrategy.params.map((p) => {
-              const rng = paramRanges[p.name] ?? { min: p.default, max: p.default, step: 1 };
-              return (
-                <div key={p.name}>
-                  <p className="mb-1.5 text-sm font-medium text-slate-300">{p.name}</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Field label="Min" htmlFor={`${p.name}-min`}>
-                      <input
-                        id={`${p.name}-min`}
-                        type="number"
-                        min={p.min}
-                        step={p.step ?? 1}
-                        value={rng.min}
-                        onChange={(e) => setRange(p.name, "min", Number(e.target.value))}
-                        className={inputClass}
-                      />
-                    </Field>
-                    <Field label="Max" htmlFor={`${p.name}-max`}>
-                      <input
-                        id={`${p.name}-max`}
-                        type="number"
-                        min={p.min}
-                        step={p.step ?? 1}
-                        value={rng.max}
-                        onChange={(e) => setRange(p.name, "max", Number(e.target.value))}
-                        className={inputClass}
-                      />
-                    </Field>
-                    <Field label="Step" htmlFor={`${p.name}-step`}>
-                      <input
-                        id={`${p.name}-step`}
-                        type="number"
-                        min={0.001}
-                        step={p.step ?? 1}
-                        value={rng.step}
-                        onChange={(e) => setRange(p.name, "step", Number(e.target.value))}
-                        className={inputClass}
-                      />
-                    </Field>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <ParamRangeGrid
+            params={selectedStrategy.params}
+            ranges={paramRanges}
+            onChange={setRange}
+            idPrefix="sweep-"
+          />
           {variedCount > 2 && (
             <p className="mt-3 text-xs text-amber-400">
               Only 1 or 2 parameters can vary for a chart — set extras to min = max.
@@ -194,14 +143,15 @@ export function SweepForm({
         </Panel>
       )}
 
-      <button
-        type="button"
+      <Button
+        variant="violet"
         onClick={handleSubmit}
         disabled={!canRun || variedCount > 2}
-        className="w-full rounded-lg bg-violet-600 px-4 py-2.5 font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
+        loading={running}
+        className="w-full rounded-lg py-2.5 font-semibold"
       >
         {running ? "Running sweep…" : "Run sweep"}
-      </button>
+      </Button>
 
       {!engineAvailable && (
         <p className="text-center text-xs text-amber-400">

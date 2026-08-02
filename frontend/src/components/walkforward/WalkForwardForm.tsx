@@ -1,6 +1,11 @@
 import { useState, useEffect } from "react";
+import { ParamRangeGrid } from "../config/ParamRangeGrid";
+import { Button } from "../ui/Button";
 import { Field } from "../ui/Field";
+import { Input } from "../ui/Input";
 import { Panel } from "../ui/Panel";
+import { Select } from "../ui/Select";
+import { METRIC_OPTIONS } from "../../lib/metrics";
 import type {
   Dataset,
   FillTiming,
@@ -9,20 +14,6 @@ import type {
   StrategyType,
   WalkForwardRequest,
 } from "../../types/api";
-
-const METRIC_OPTIONS = [
-  { value: "sharpe_ratio",          label: "Sharpe ratio" },
-  { value: "total_return",          label: "Total return" },
-  { value: "cagr",                  label: "CAGR" },
-  { value: "sortino_ratio",         label: "Sortino ratio" },
-  { value: "max_drawdown",          label: "Max drawdown (lower is better)" },
-  { value: "annualized_volatility", label: "Ann. volatility (lower is better)" },
-];
-
-const selectClass =
-  "w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
-const inputClass =
-  "w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
 
 interface WalkForwardFormProps {
   strategies: StrategyMeta[];
@@ -99,53 +90,50 @@ export function WalkForwardForm({
       <Panel title="Walk-forward settings">
         <div className="space-y-3">
           <Field label="Dataset" htmlFor="wf-dataset">
-            <select
+            <Select
               id="wf-dataset"
               value={dataset}
               onChange={(e) => setDataset(e.target.value)}
-              className={selectClass}
             >
               {datasets.map((d) => (
                 <option key={d.name} value={d.name}>
                   {d.symbol}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
 
           <Field label="Strategy" htmlFor="wf-strategy">
-            <select
+            <Select
               id="wf-strategy"
               value={strategyType}
               onChange={(e) => setStrategyType(e.target.value as StrategyType)}
-              className={selectClass}
             >
               {strategies.map((s) => (
                 <option key={s.type} value={s.type}>
                   {s.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
 
           <Field label="Optimise by" htmlFor="wf-metric">
-            <select
+            <Select
               id="wf-metric"
               value={metric}
               onChange={(e) => setMetric(e.target.value)}
-              className={selectClass}
             >
               {METRIC_OPTIONS.map((m) => (
                 <option key={m.value} value={m.value}>
                   {m.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Windows" htmlFor="wf-windows" hint="Number of rolling folds (≥ 2)">
-              <input
+              <Input
                 id="wf-windows"
                 type="number"
                 min={2}
@@ -153,11 +141,10 @@ export function WalkForwardForm({
                 step={1}
                 value={nWindows}
                 onChange={(e) => setNWindows(Number(e.target.value))}
-                className={inputClass}
               />
             </Field>
             <Field label="Train fraction" htmlFor="wf-trainfrac" hint="Fraction of each fold used for training (0–1)">
-              <input
+              <Input
                 id="wf-trainfrac"
                 type="number"
                 min={0.1}
@@ -165,21 +152,19 @@ export function WalkForwardForm({
                 step={0.05}
                 value={trainFrac}
                 onChange={(e) => setTrainFrac(Number(e.target.value))}
-                className={inputClass}
               />
             </Field>
           </div>
 
           <Field label="Fill timing" htmlFor="wf-fill-timing" hint="Next open = realistic; Close = legacy">
-            <select
+            <Select
               id="wf-fill-timing"
               value={fillTiming}
               onChange={(e) => setFillTiming(e.target.value as FillTiming)}
-              className={selectClass}
             >
               <option value="next_open">Next open (realistic)</option>
               <option value="close">Close (legacy)</option>
-            </select>
+            </Select>
           </Field>
         </div>
       </Panel>
@@ -189,62 +174,24 @@ export function WalkForwardForm({
           <p className="mb-3 text-xs text-slate-500">
             Define ranges for the parameter grid. Best combo per fold is chosen by the selected metric.
           </p>
-          <div className="space-y-4">
-            {selectedStrategy.params.map((p) => {
-              const rng = paramRanges[p.name] ?? { min: p.default, max: p.default, step: 1 };
-              return (
-                <div key={p.name}>
-                  <p className="mb-1.5 text-sm font-medium text-slate-300">{p.name}</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <Field label="Min" htmlFor={`wf-${p.name}-min`}>
-                      <input
-                        id={`wf-${p.name}-min`}
-                        type="number"
-                        min={p.min}
-                        step={p.step ?? 1}
-                        value={rng.min}
-                        onChange={(e) => setRange(p.name, "min", Number(e.target.value))}
-                        className={inputClass}
-                      />
-                    </Field>
-                    <Field label="Max" htmlFor={`wf-${p.name}-max`}>
-                      <input
-                        id={`wf-${p.name}-max`}
-                        type="number"
-                        min={p.min}
-                        step={p.step ?? 1}
-                        value={rng.max}
-                        onChange={(e) => setRange(p.name, "max", Number(e.target.value))}
-                        className={inputClass}
-                      />
-                    </Field>
-                    <Field label="Step" htmlFor={`wf-${p.name}-step`}>
-                      <input
-                        id={`wf-${p.name}-step`}
-                        type="number"
-                        min={0.001}
-                        step={p.step ?? 1}
-                        value={rng.step}
-                        onChange={(e) => setRange(p.name, "step", Number(e.target.value))}
-                        className={inputClass}
-                      />
-                    </Field>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <ParamRangeGrid
+            params={selectedStrategy.params}
+            ranges={paramRanges}
+            onChange={setRange}
+            idPrefix="wf-"
+          />
         </Panel>
       )}
 
-      <button
-        type="button"
+      <Button
+        variant="teal"
         onClick={handleSubmit}
         disabled={!canRun}
-        className="w-full rounded-lg bg-teal-600 px-4 py-2.5 font-semibold text-white transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
+        loading={running}
+        className="w-full rounded-lg py-2.5 font-semibold"
       >
         {running ? "Running walk-forward…" : "Run walk-forward"}
-      </button>
+      </Button>
 
       {!engineAvailable && (
         <p className="text-center text-xs text-amber-400">

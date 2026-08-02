@@ -1,12 +1,12 @@
 import { Panel } from "../ui/Panel";
 import { AssetList } from "./AssetList";
 import { CostInputs } from "./CostInputs";
+import { Button } from "../ui/Button";
 import { Field } from "../ui/Field";
+import { Input } from "../ui/Input";
+import { Select } from "../ui/Select";
 import type { PortfolioForm } from "../../state/usePortfolioForm";
 import type { Dataset, FillTiming, RebalanceConfig, StrategyMeta } from "../../types/api";
-
-const selectClass =
-  "w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
 
 function RebalancingControls({
   value,
@@ -31,21 +31,20 @@ function RebalancingControls({
   return (
     <div className="space-y-3">
       <Field label="Frequency" htmlFor="rebalance-freq">
-        <select
+        <Select
           id="rebalance-freq"
           value={frequency}
           onChange={(e) => handleFrequencyChange(e.target.value)}
-          className={selectClass}
         >
           <option value="none">None</option>
           <option value="monthly">Monthly</option>
           <option value="quarterly">Quarterly</option>
           <option value="threshold">Drift threshold</option>
-        </select>
+        </Select>
       </Field>
       {frequency === "threshold" && (
         <Field label="Max drift (%)" htmlFor="rebalance-threshold" hint="Rebalance when any asset drifts by this much from its target weight">
-          <input
+          <Input
             id="rebalance-threshold"
             type="number"
             min={0.1}
@@ -55,7 +54,6 @@ function RebalancingControls({
             onChange={(e) =>
               onChange({ frequency: { kind: "threshold", threshold: Number(e.target.value) / 100 } })
             }
-            className={selectClass}
           />
         </Field>
       )}
@@ -104,11 +102,10 @@ export function ConfigPanel({
 
       <Panel title="Benchmark">
         <Field label="External benchmark" htmlFor="benchmark-symbol" hint="Overlay a buy-and-hold series on the equity chart">
-          <select
+          <Select
             id="benchmark-symbol"
             value={form.benchmarkSymbol ?? ""}
             onChange={(e) => form.setBenchmarkSymbol(e.target.value || null)}
-            className="w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none"
           >
             <option value="">None (internal buy &amp; hold only)</option>
             {datasets.map((d) => (
@@ -116,7 +113,7 @@ export function ConfigPanel({
                 {d.symbol}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
       </Panel>
 
@@ -129,26 +126,25 @@ export function ConfigPanel({
 
       <Panel title="Execution">
         <Field label="Fill timing" htmlFor="fill-timing" hint="Next open = realistic (default); Close = legacy/lookahead-light">
-          <select
+          <Select
             id="fill-timing"
             value={form.fillTiming}
             onChange={(e) => form.setFillTiming(e.target.value as FillTiming)}
-            className={selectClass}
           >
             <option value="next_open">Next open (realistic)</option>
             <option value="close">Close (legacy)</option>
-          </select>
+          </Select>
         </Field>
       </Panel>
 
-      <button
-        type="button"
+      <Button
         onClick={onRun}
         disabled={!canRun}
-        className="w-full rounded-lg bg-sky-500 px-4 py-2.5 font-semibold text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
+        loading={running}
+        className="w-full rounded-lg py-2.5 font-semibold"
       >
         {running ? "Running…" : "Run backtest"}
-      </button>
+      </Button>
 
       {!engineAvailable && (
         <p className="text-center text-xs text-amber-400">

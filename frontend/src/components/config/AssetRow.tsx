@@ -1,6 +1,8 @@
 import { AssetDataSource } from "./AssetDataSource";
 import { StrategyPicker } from "./StrategyPicker";
+import { Button } from "../ui/Button";
 import { Field } from "../ui/Field";
+import { Input } from "../ui/Input";
 import type { Dataset, StrategyMeta, StrategyType } from "../../types/api";
 import type { AssetConfig, PortfolioForm } from "../../state/usePortfolioForm";
 
@@ -13,9 +15,6 @@ interface AssetRowProps {
   canRemove: boolean;
   weightPct: number | null;
 }
-
-const inputClass =
-  "w-full rounded-md border border-slate-600 bg-slate-900 px-2.5 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
 
 export function AssetRow({
   index,
@@ -35,26 +34,27 @@ export function AssetRow({
           Asset {index + 1}
         </span>
         {canRemove && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => form.removeAsset(asset.id)}
-            className="text-xs text-slate-500 hover:text-rose-400"
+            className="px-0 text-slate-500 hover:text-rose-400"
             aria-label={`Remove asset ${index + 1}`}
           >
             Remove
-          </button>
+          </Button>
         )}
       </div>
 
       <div className="grid grid-cols-[1fr_auto] gap-2">
         <Field label="Symbol" htmlFor={`${asset.id}-symbol`}>
-          <input
+          <Input
             id={`${asset.id}-symbol`}
+            size="sm"
             type="text"
             value={asset.symbol}
             placeholder="e.g. AAPL"
             onChange={(e) => form.updateAsset(asset.id, { symbol: e.target.value })}
-            className={inputClass}
           />
         </Field>
         <Field
@@ -62,8 +62,9 @@ export function AssetRow({
           hint={weightPct !== null ? `${weightPct.toFixed(0)}%` : undefined}
           htmlFor={`${asset.id}-weight`}
         >
-          <input
+          <Input
             id={`${asset.id}-weight`}
+            size="sm"
             type="number"
             min={0}
             step={0.1}
@@ -71,7 +72,7 @@ export function AssetRow({
             onChange={(e) =>
               form.updateAsset(asset.id, { weight: Number(e.target.value) })
             }
-            className={`${inputClass} w-24`}
+            className="w-24"
           />
         </Field>
       </div>
@@ -93,6 +94,7 @@ export function AssetRow({
 
       <StrategyPicker
         strategies={strategies}
+        idPrefix={`${asset.id}-`}
         strategyType={asset.strategyType}
         current={current}
         params={asset.params}

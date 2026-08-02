@@ -10,24 +10,17 @@ import {
 } from "recharts";
 import { Panel } from "../ui/Panel";
 import { Spinner } from "../ui/Spinner";
-import { formatNum, formatPct } from "../../lib/format";
-import type { Metrics, WalkForwardFold } from "../../types/api";
+import {
+  AXIS_TICK,
+  CHART_MARGIN,
+  GRID,
+  GRID_DASH,
+  SERIES,
+  TOOLTIP_STYLE,
+} from "../../lib/chartTheme";
+import { formatMetric, getMetricValue } from "../../lib/metrics";
+import type { WalkForwardFold } from "../../types/api";
 import type { WalkForwardStatus } from "../../hooks/useWalkForward";
-
-// ─── Shared helpers (mirrors SweepResultsPanel) ──────────────────────────────
-
-const PCT_METRICS = new Set([
-  "total_return", "cagr", "annualized_volatility", "max_drawdown", "win_rate",
-]);
-
-function getMetricValue(metrics: Metrics, key: string): number {
-  return ((metrics as unknown) as Record<string, number | null>)[key] ?? 0;
-}
-
-function formatMetric(value: number | null, metric: string): string {
-  if (value === null || value === undefined || !isFinite(value as number)) return "—";
-  return PCT_METRICS.has(metric) ? formatPct(value as number) : formatNum(value as number);
-}
 
 // ─── Per-fold table ──────────────────────────────────────────────────────────
 
@@ -106,17 +99,17 @@ function TrainTestChart({
   return (
     <div className="h-64 w-full">
       <ResponsiveContainer>
-        <BarChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-          <XAxis dataKey="fold" tick={{ fontSize: 11, fill: "#94a3b8" }} />
-          <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} width={64} tickFormatter={fmt} />
+        <BarChart data={data} margin={CHART_MARGIN}>
+          <CartesianGrid strokeDasharray={GRID_DASH} stroke={GRID} />
+          <XAxis dataKey="fold" tick={AXIS_TICK} />
+          <YAxis tick={AXIS_TICK} width={64} tickFormatter={fmt} />
           <Tooltip
-            contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+            contentStyle={TOOLTIP_STYLE}
             formatter={(v: number, name: string) => [fmt(v), name === "train" ? "Train" : "Test"]}
           />
-          <Legend wrapperStyle={{ fontSize: 12, color: "#94a3b8" }} />
-          <Bar dataKey="train" name="Train" fill="#38bdf8" radius={[3, 3, 0, 0]} />
-          <Bar dataKey="test"  name="Test"  fill="#fb923c" radius={[3, 3, 0, 0]} />
+          <Legend wrapperStyle={{ fontSize: 12, color: AXIS_TICK.fill }} />
+          <Bar dataKey="train" name="Train" fill={SERIES.primary} radius={[3, 3, 0, 0]} />
+          <Bar dataKey="test" name="Test" fill={SERIES.external} radius={[3, 3, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
