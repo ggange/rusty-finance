@@ -3,6 +3,8 @@ import { api } from "../../lib/apiClient";
 import { parseCsv } from "../../lib/csv";
 import type { Candle, Dataset } from "../../types/api";
 import type { AssetSourceState } from "../../state/usePortfolioForm";
+import { Button } from "../ui/Button";
+import { Select } from "../ui/Select";
 
 interface AssetDataSourceProps {
   datasets: Dataset[];
@@ -11,9 +13,6 @@ interface AssetDataSourceProps {
   onDataset: (name: string, candles: Candle[], symbol: string) => void;
   onInline: (fileName: string, candles: Candle[]) => void;
 }
-
-const inputClass =
-  "w-full rounded-md border border-slate-600 bg-slate-900 px-2.5 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none";
 
 export function AssetDataSource({
   datasets,
@@ -59,10 +58,10 @@ export function AssetDataSource({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <select
+        <Select
+          size="sm"
           value={selectedName}
           onChange={(e) => void pickDataset(e.target.value)}
-          className={inputClass}
           aria-label="Dataset"
         >
           <option value="">
@@ -73,14 +72,15 @@ export function AssetDataSource({
               {d.symbol} ({d.rows} bars)
             </option>
           ))}
-        </select>
-        <button
-          type="button"
+        </Select>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => inputRef.current?.click()}
-          className="shrink-0 rounded-md border border-slate-600 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700/60"
+          className="shrink-0 py-1.5"
         >
           Upload…
-        </button>
+        </Button>
         <input
           ref={inputRef}
           type="file"

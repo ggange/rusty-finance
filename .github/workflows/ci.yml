@@ -42,7 +42,7 @@ jobs:
         run: .venv/bin/pytest api/tests/ -v
 
   frontend:
-    name: Frontend build
+    name: Frontend tests and build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -53,5 +53,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: cd frontend && npm ci
+      - name: Run tests
+        run: cd frontend && npm run test:run
       - name: Type-check and build
         run: cd frontend && npm run build

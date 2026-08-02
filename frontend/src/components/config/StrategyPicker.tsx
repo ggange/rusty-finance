@@ -1,4 +1,5 @@
 import { Field } from "../ui/Field";
+import { Select } from "../ui/Select";
 import { StrategyParamField } from "./StrategyParamField";
 import type { StrategyMeta, StrategyType } from "../../types/api";
 
@@ -9,6 +10,8 @@ interface StrategyPickerProps {
   params: Record<string, number>;
   onTypeChange: (type: StrategyType) => void;
   onParam: (name: string, value: number) => void;
+  /** Prefix so ids stay unique when several assets each render a picker. */
+  idPrefix?: string;
 }
 
 export function StrategyPicker({
@@ -18,22 +21,23 @@ export function StrategyPicker({
   params,
   onTypeChange,
   onParam,
+  idPrefix = "",
 }: StrategyPickerProps) {
+  const selectId = `${idPrefix}strategy-select`;
   return (
     <div className="space-y-3">
-      <Field label="Strategy" htmlFor="strategy-select">
-        <select
-          id="strategy-select"
+      <Field label="Strategy" htmlFor={selectId}>
+        <Select
+          id={selectId}
           value={strategyType ?? ""}
           onChange={(e) => onTypeChange(e.target.value as StrategyType)}
-          className="w-full rounded-md border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 focus:border-sky-400 focus:outline-none"
         >
           {strategies.map((s) => (
             <option key={s.type} value={s.type}>
               {s.name}
             </option>
           ))}
-        </select>
+        </Select>
       </Field>
 
       {current && (
@@ -44,6 +48,7 @@ export function StrategyPicker({
         <StrategyParamField
           key={p.name}
           meta={p}
+          idPrefix={idPrefix}
           value={params[p.name] ?? p.default}
           onChange={(v) => onParam(p.name, v)}
         />

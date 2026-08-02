@@ -9,6 +9,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import {
+  AXIS_TICK,
+  CHART_MARGIN,
+  GRID,
+  GRID_DASH,
+  LEGEND_STYLE,
+  SERIES,
+  TOOLTIP_STYLE,
+} from "../../lib/chartTheme";
 import { formatCurrency } from "../../lib/format";
 import type { Candle, EquityPoint } from "../../types/api";
 
@@ -70,30 +79,22 @@ export function PortfolioEquityChart({
   return (
     <div className="h-72 w-full">
       <ResponsiveContainer>
-        <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-          <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#94a3b8" }} minTickGap={40} />
+        <LineChart data={data} margin={CHART_MARGIN}>
+          <CartesianGrid strokeDasharray={GRID_DASH} stroke={GRID} />
+          <XAxis dataKey="date" tick={AXIS_TICK} minTickGap={40} />
           <YAxis
-            tick={{ fontSize: 11, fill: "#94a3b8" }}
+            tick={AXIS_TICK}
             width={70}
             tickFormatter={(v) => formatCurrency(v, 0)}
             domain={["auto", "auto"]}
           />
-          <Tooltip
-            contentStyle={{
-              background: "#0f172a",
-              border: "1px solid #334155",
-              borderRadius: 8,
-              fontSize: 12,
-            }}
-            formatter={(v: number) => formatCurrency(v)}
-          />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => formatCurrency(v)} />
+          <Legend wrapperStyle={LEGEND_STYLE} />
           <Line
             type="monotone"
             dataKey="strategy"
             name="Portfolio"
-            stroke="#38bdf8"
+            stroke={SERIES.primary}
             strokeWidth={2}
             dot={false}
           />
@@ -101,7 +102,7 @@ export function PortfolioEquityChart({
             type="monotone"
             dataKey="benchmark"
             name="Buy & Hold"
-            stroke="#a3a3a3"
+            stroke={SERIES.benchmark}
             strokeWidth={1.5}
             strokeDasharray="4 4"
             dot={false}
@@ -111,7 +112,7 @@ export function PortfolioEquityChart({
               type="monotone"
               dataKey="extBenchmark"
               name="Benchmark"
-              stroke="#fb923c"
+              stroke={SERIES.external}
               strokeWidth={1.5}
               strokeDasharray="6 2"
               dot={false}
@@ -121,10 +122,15 @@ export function PortfolioEquityChart({
             <ReferenceLine
               key={d}
               x={d}
-              stroke="#7c3aed"
+              stroke={SERIES.marker}
               strokeWidth={1}
               strokeDasharray="2 4"
-              label={{ value: "↺", position: "insideTopRight", fill: "#7c3aed", fontSize: 10 }}
+              label={{
+                value: "↺",
+                position: "insideTopRight",
+                fill: SERIES.marker,
+                fontSize: 10,
+              }}
             />
           ))}
         </LineChart>
