@@ -274,3 +274,31 @@ def test_scheduled_run_uses_configured_broker(client, monkeypatch):
 
     orders = client.get("/trade/orders?plan_id=p").json()["orders"]
     assert orders[0]["broker"] == "paper_sim"
+
+
+# ─── Engine availability ──────────────────────────────────────────────────────
+
+def test_run_tick_without_engine_raises_legibly(db_path, monkeypatch):
+    """The scheduler calls run_tick directly, bypassing the HTTP engine guard.
+
+    Without an explicit check the missing binding surfaced as a bare
+    "NameError: name 'bt' is not defined" inside a cron log.
+    """
+    monkeypatch.setattr(trading, "_ENGINE_AVAILABLE", False)
+
+    with pytest.raises(trading.EngineUnavailable, match="maturin develop"):
+        asyncio.run(trading.run_tick("p", items(), PersistentPaperBroker()))
+
+
+def test_scheduled_run_reports_engine_failure_per_plan(client, monkeypatch):
+    """A missing engine must be recorded as a plan failure, not crash the cycle."""
+    client.post("/trade/plans", json={
+        "plan_id": "p", "items": [{"dataset": "BUY.csv", "strategy": RSI2, "cash_allocation": 100}],
+    })
+    monkeypatch.setattr(trading, "_ENGINE_AVAILABLE", False)
+
+    from api import scheduler
+    body = asyncio.run(scheduler.run_all_plans(refresh=False))
+
+    assert body["plans_failed"] == 1
+    assert "maturin develop" in body["results"][0]["error"]

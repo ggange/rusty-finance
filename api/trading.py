@@ -15,6 +15,23 @@ except ImportError:
     _ENGINE_AVAILABLE = False
 
 
+class EngineUnavailable(RuntimeError):
+    """The Rust bindings aren't importable, so no signal can be computed."""
+
+
+def _require_engine() -> None:
+    """Fail loudly and legibly when the bindings are missing.
+
+    The HTTP layer guards its own endpoints, but the scheduler calls `run_tick`
+    directly — without this, a missing binding surfaces as a bare
+    `NameError: name 'bt' is not defined` inside a 16:30 cron log.
+    """
+    if not _ENGINE_AVAILABLE:
+        raise EngineUnavailable(
+            "backtesting_py not installed — run: cd backtesting-py && maturin develop"
+        )
+
+
 def resolve_items(items: list[dict]) -> list[dict]:
     """Expand stored/requested plan items into the shape run_tick consumes.
 
@@ -186,6 +203,7 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
 
     Returns { plan_id, results: [...], positions: [...], limits, kill_switch }.
     """
+    _require_engine()
     results = []
 
     limits = await resolve_plan_limits(plan_id)
