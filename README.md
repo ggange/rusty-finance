@@ -119,6 +119,65 @@ The backtesting engine expects CSV files with these headers:
 | Close | float | Closing price |
 | Volume | integer | Shares traded |
 
+## Market Data
+
+Datasets live in `data/datasets/` as one CSV per symbol. Two ways to populate them:
+
+```bash
+make fetch TICKER=NVDA          # full download over a date range
+make fetch-all                  # full download of the standard 5-symbol catalog
+make refresh                    # append only bars newer than what's on disk
+make refresh SYMBOLS="AAPL TSLA"
+```
+
+`make refresh` is the incremental path: for each symbol it reads the last stored
+date, refetches from that bar forward, and merges. Rows are deduplicated on
+`Date` with the newly fetched bar winning, so the trailing bar picks up Yahoo's
+post-close revisions rather than keeping a stale copy. On a network error or an
+empty response the existing CSV is left untouched — a failed refresh never
+destroys history.
+
+## Trading Loop (dry-run)
+
+The loop turns a strategy signal on the latest bar into an order intent. It is
+**dry-run only** — `DryRunBroker` logs intents and writes them to SQLite; no
+broker is connected and no real order can be placed.
+
+Store a plan, and the scheduler will run it:
+
+```bash
+curl -X POST localhost:8000/trade/plans -H 'Content-Type: application/json' -d '{
+  "plan_id": "paper-rsi",
+  "items": [
+    {"dataset": "MSFT.csv", "strategy": {"type": "rsi", "period": 14}, "cash_allocation": 10000},
+    {"dataset": "NVDA.csv", "strategy": {"type": "rsi", "period": 14}, "cash_allocation": 10000}
+  ]
+}'
+
+curl localhost:8000/trade/schedule            # cron config, next run, last run
+curl -X POST localhost:8000/trade/schedule/run   # run the cycle now
+curl localhost:8000/trade/positions
+curl localhost:8000/trade/intents
+```
+
+An in-process APScheduler starts with the API and fires the cycle on a weekday
+cron — refresh every plan symbol's bars, then tick each enabled plan. Defaults
+to 16:30 America/New_York, after the US close so the day's final bar is settled.
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `RUSTY_FINANCE_SCHEDULER` | `1` | Set `0` to disable the scheduler entirely |
+| `RUSTY_FINANCE_SCHEDULER_DAYS` | `mon-fri` | Cron day-of-week field |
+| `RUSTY_FINANCE_SCHEDULER_HOUR` | `16` | Cron hour |
+| `RUSTY_FINANCE_SCHEDULER_MINUTE` | `30` | Cron minute |
+| `RUSTY_FINANCE_SCHEDULER_TZ` | `America/New_York` | Scheduler timezone |
+| `RUSTY_FINANCE_SCHEDULER_REFRESH` | `1` | Set `0` to tick without fetching data |
+
+Market holidays need no special handling: the cron fires, the refresh returns no
+new bars, the strategy re-reads the same last bar, and the buy/sell decision is
+idempotent — so a holiday tick is a no-op rather than a duplicate order. The same
+property makes `POST /trade/schedule/run` safe to invoke repeatedly.
+
 ## Troubleshooting
 
 ### Backend

@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -504,8 +505,20 @@ def test_portfolio_quarterly_rebalancing():
     body = resp.json()
     dates = body.get("rebalance_dates", [])
     assert len(dates) > 0, "quarterly rebalancing should produce rebalance dates"
-    # Quarterly should have fewer rebalances than monthly over the same period.
-    assert len(dates) <= 20  # 5 years * 4 quarters = 20 max
+
+    # Bound the count by the *actual* data span rather than a fixed number of
+    # years — the catalog grows every time `make refresh` runs.
+    span = client.get("/datasets/AAPL.csv").json()["candles"]
+    start, end = date.fromisoformat(span[0]["date"]), date.fromisoformat(span[-1]["date"])
+    quarters = ((end.year - start.year) * 12 + (end.month - start.month)) // 3 + 1
+    assert len(dates) <= quarters
+
+    # And the defining property: rebalances land about a quarter apart.
+    gaps = [
+        (date.fromisoformat(b) - date.fromisoformat(a)).days
+        for a, b in zip(dates, dates[1:])
+    ]
+    assert all(80 <= g <= 100 for g in gaps), f"unexpected quarterly spacing: {gaps}"
 
 
 def test_portfolio_no_rebalancing_has_no_rebalance_dates():

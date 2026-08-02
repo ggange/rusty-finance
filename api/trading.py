@@ -12,6 +12,28 @@ except ImportError:
     _ENGINE_AVAILABLE = False
 
 
+def resolve_items(items: list[dict]) -> list[dict]:
+    """Expand stored/requested plan items into the shape run_tick consumes.
+
+    Input items are {dataset, strategy (dict), cash_allocation}; this loads each
+    dataset's candles and derives the symbol and the canonical strategy_key.
+    Shared by the /trade/tick endpoint and the scheduler so a scheduled tick and
+    a manual one address exactly the same ledger rows.
+    """
+    resolved = []
+    for item in items:
+        dataset = item["dataset"]
+        strategy = item["strategy"]
+        resolved.append({
+            "symbol": dataset.removesuffix(".csv").upper(),
+            "strategy_json": json.dumps(strategy),
+            "strategy_key": json.dumps(strategy, sort_keys=True),
+            "cash_allocation": item["cash_allocation"],
+            "candles": load_dataset(dataset),
+        })
+    return resolved
+
+
 def decide(
     signal: str,
     position: dict | None,

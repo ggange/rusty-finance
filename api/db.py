@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS positions (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (plan_id, symbol, strategy)
 );
+CREATE TABLE IF NOT EXISTS trade_plans (
+    plan_id    TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    items      TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS order_intents (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -88,6 +95,92 @@ async def get_run(run_id: int) -> dict | None:
     async with aiosqlite.connect(_db_path()) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "kind": row["kind"],
+        "config": json.loads(row["config"]),
+        "result": json.loads(row["result"]),
+    }
+
+
+# ─── Trading plans ────────────────────────────────────────────────────────────
+#
+# The scheduler fires with no HTTP request behind it, so the items it should
+# trade have to live somewhere durable rather than in a request body.
+
+def _row_to_plan(row) -> dict:
+    return {
+        "plan_id": row["plan_id"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "enabled": bool(row["enabled"]),
+        "items": json.loads(row["items"]),
+    }
+
+
+async def upsert_plan(plan_id: str, items: list[dict], enabled: bool = True) -> dict:
+    """Create or replace a trading plan. created_at survives an update."""
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute(
+            """
+            INSERT INTO trade_plans (plan_id, created_at, updated_at, enabled, items)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(plan_id) DO UPDATE SET
+                updated_at=excluded.updated_at,
+                enabled=excluded.enabled,
+                items=excluded.items
+            """,
+            (plan_id, ts, ts, int(enabled), json.dumps(items)),
+        )
+        await db.commit()
+    return await get_plan(plan_id)
+
+
+async def get_plan(plan_id: str) -> dict | None:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM trade_plans WHERE plan_id=?", (plan_id,))
+        row = await cur.fetchone()
+    return _row_to_plan(row) if row is not None else None
+
+
+async def list_plans(enabled_only: bool = False) -> list[dict]:
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        sql = "SELECT * FROM trade_plans"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY plan_id"
+        cur = await db.execute(sql)
+        rows = await cur.fetchall()
+    return [_row_to_plan(r) for r in rows]
+
+
+async def delete_plan(plan_id: str) -> bool:
+    """Delete a plan. Returns True if a row was removed."""
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        cur = await db.execute("DELETE FROM trade_plans WHERE plan_id=?", (plan_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def last_run_of_kind(kind: str) -> dict | None:
+    """Most recent entry in `runs` for a given kind — used for scheduler status."""
+    await init_db()
+    async with aiosqlite.connect(_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM runs WHERE kind=? ORDER BY id DESC LIMIT 1", (kind,)
+        )
         row = await cur.fetchone()
     if row is None:
         return None
