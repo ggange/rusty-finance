@@ -274,6 +274,33 @@ Was Horizon 4. Stretch ideas, pursued only if the project wants to go further:
 - **Engine independence per asset.** v1 portfolio runs each asset through its own
   sub-portfolio and aggregates. Cross-asset strategies (pairs, risk parity
   rebalancing) will need a shared-clock engine — a deliberate Horizon 2/4 break.
+  - **Amended.** Weight optimization, including risk parity re-solved at every
+    rebalance date, turned out *not* to need the shared clock. Rebalancing was
+    already a NAV overlay that answers "at this date, what are the target
+    weights?", so a solver only had to supply different targets. What genuinely
+    needs a shared clock is cross-asset *signalling* — asset A's entry depending
+    on asset B's price at the same bar, as in pairs trading. Allocation and
+    signalling were conflated in the original note.
+- **Weight solving never sees the future.** A static solve could have optimized
+  over all history and allocated from day one; that is the textbook framing and
+  it is look-ahead. Instead `static` spends a warm-up window estimating and
+  switches once it is full, and `dynamic` re-solves from a trailing window. Both
+  are walk-forward by construction, matching how strategy parameters are already
+  validated.
+- **Levels, not multipliers, in the rebalance overlay.** The overlay used to
+  accumulate multiplicative rebalance ratios. That is fine while weights stay
+  positive, but an optimizer may legitimately drop an asset to ~0 and later want
+  it back, which needs `target / ≈0` — infinity, then NaN across the whole
+  equity curve. Tracking each asset's NAV level directly re-funds cleanly.
+- **Long-only, because the engine is.** Every solver projects onto the simplex.
+  Unconstrained mean-variance would return shorts, and `Portfolio` cannot express
+  one — the backtest would silently not be the portfolio that was solved for.
+- **Optimizing is cheap; being right is not.** A solve costs 6–15 µs, so
+  per-rebalance optimization is free next to the engine (78 solves add ~1 ms to a
+  9 ms run). The constraint was never compute. On the real catalog, dynamic
+  max-Sharpe produced the *highest* return (193% vs 149%) and a *worse* Sharpe
+  than equal weight (0.77 vs 0.80), with a −34% drawdown against −28%. Principle
+  5 applies to weights exactly as it does to strategy parameters.
 - **Data lives on disk, resolved in Python.** Keeps the Rust core pure. A live
   fetcher writes CSVs into the existing catalog rather than calling the network
   from Rust.

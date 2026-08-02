@@ -7,7 +7,10 @@ use backtesting::{
     engine::{BacktestEngine, FillTiming},
     metrics::Metrics,
     portfolio::{ExecutionCosts, Portfolio},
-    portfolio_backtest::{run_portfolio as run_portfolio_core, PortfolioAsset, RebalanceConfig},
+    optimize::{optimize_weights as optimize_weights_core, OptimizerConfig},
+    portfolio_backtest::{
+        run_portfolio_with_policy, PortfolioAsset, RebalanceConfig, WeightPolicy,
+    },
     strategy::ma::{MAType, MovingAverageCrossover},
     strategy::rsi::RSI,
     strategy::macd::MACD,
@@ -47,6 +50,9 @@ struct PortfolioRequestIn {
     assets: Vec<AssetIn>,
     #[serde(default)]
     rebalance: Option<RebalanceConfig>,
+    /// How target weights are decided. Absent means the manual weights.
+    #[serde(default)]
+    weight_policy: Option<WeightPolicy>,
 }
 
 /// Build a boxed strategy from a spec, validating its parameters.
@@ -169,8 +175,41 @@ fn run_portfolio(
     }
 
     let costs = ExecutionCosts { commission_per_trade: commission, slippage_pct };
-    let result = run_portfolio_core(assets, initial_cash, costs, req.rebalance, timing);
+    let result = run_portfolio_with_policy(
+        assets,
+        initial_cash,
+        costs,
+        req.rebalance,
+        timing,
+        req.weight_policy.unwrap_or_default(),
+    );
     to_json(result)
+}
+
+/// Solve portfolio weights directly, without running a backtest.
+///
+/// `returns_json` is a JSON array of per-asset daily return series (asset-major).
+/// `config_json` is an [`OptimizerConfig`]:
+/// `{"objective": "risk_parity", "shrinkage": 0.2, "max_weight": null, "max_iter": 500, "tol": 1e-9}`.
+///
+/// Returns `{weights, expected_volatility, expected_return, risk_contribution,
+/// iterations, hit_iteration_limit}`.
+#[pyfunction]
+#[pyo3(signature = (returns_json, config_json))]
+fn optimize_weights(returns_json: &str, config_json: &str) -> PyResult<String> {
+    let returns: Vec<Vec<f64>> = serde_json::from_str(returns_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid returns JSON: {e}")))?;
+    let config: OptimizerConfig = serde_json::from_str(config_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid optimizer config: {e}")))?;
+    if !(0.0..=1.0).contains(&config.shrinkage) {
+        return Err(PyValueError::new_err("shrinkage must be between 0 and 1"));
+    }
+    if let Some(cap) = config.max_weight {
+        if cap <= 0.0 || cap > 1.0 {
+            return Err(PyValueError::new_err("max_weight must be in (0, 1]"));
+        }
+    }
+    to_json(optimize_weights_core(&returns, &config))
 }
 
 /// Run the same strategy with different parameter sets over one candle series.
@@ -379,6 +418,7 @@ fn to_json<T: serde::Serialize>(v: T) -> PyResult<String> {
 fn backtesting_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run, m)?)?;
     m.add_function(wrap_pyfunction!(run_portfolio, m)?)?;
+    m.add_function(wrap_pyfunction!(optimize_weights, m)?)?;
     m.add_function(wrap_pyfunction!(run_sweep, m)?)?;
     m.add_function(wrap_pyfunction!(run_walk_forward, m)?)?;
     m.add_function(wrap_pyfunction!(latest_signal, m)?)?;
