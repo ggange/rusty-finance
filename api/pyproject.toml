@@ -12,5 +12,16 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["httpx", "pytest", "pytest-asyncio", "yfinance>=0.2.40"]
 
+# This project is installed only to resolve dependencies. The modules here are
+# imported as `api.*` from the repo root (see pythonpath below), not from
+# site-packages, so nothing should be installed as a top-level module — an
+# installed bare `main` or `db` would shadow unrelated packages.
+#
+# Declaring this explicitly also stops setuptools falling back to flat-layout
+# auto-discovery, which hard-errors once a directory has several top-level
+# modules ("Multiple top-level modules discovered in a flat-layout").
+[tool.setuptools]
+py-modules = []
+
 [tool.pytest.ini_options]
 pythonpath = [".."]
