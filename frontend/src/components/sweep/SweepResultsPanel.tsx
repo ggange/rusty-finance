@@ -10,25 +10,24 @@ import {
 } from "recharts";
 import { Panel } from "../ui/Panel";
 import { Spinner } from "../ui/Spinner";
-import { formatNum, formatPct } from "../../lib/format";
+import {
+  AXIS_TICK,
+  CHART_MARGIN,
+  GRID,
+  GRID_DASH,
+  TOOLTIP_STYLE,
+} from "../../lib/chartTheme";
+import {
+  LOWER_IS_BETTER,
+  formatMetric,
+  getMetricValue as readMetric,
+} from "../../lib/metrics";
 import type { SweepPoint } from "../../types/api";
 import type { SweepStatus } from "../../hooks/useSweep";
 
-/** Metrics where lower is better (invert when coloring). */
-const LOWER_IS_BETTER = new Set(["max_drawdown"]);
-
-/** Keys that should be formatted as percentages. */
-const PCT_METRICS = new Set([
-  "total_return", "cagr", "annualized_volatility", "max_drawdown", "win_rate",
-]);
-
+/** A missing metric sorts to the bottom rather than to zero. */
 function getMetricValue(pt: SweepPoint, metric: string): number {
-  return ((pt.metrics as unknown) as Record<string, number | null>)[metric] ?? -Infinity;
-}
-
-function formatMetric(value: number | null, metric: string): string {
-  if (value === null || value === undefined || !isFinite(value as number)) return "—";
-  return PCT_METRICS.has(metric) ? formatPct(value as number) : formatNum(value as number);
+  return readMetric(pt.metrics, metric, -Infinity);
 }
 
 // ─── Color scale: 0 = worst (slate-700) → 1 = best (emerald-500) ─────────────
@@ -82,20 +81,22 @@ function SweepBarChart({
   return (
     <div className="h-72 w-full">
       <ResponsiveContainer>
-        <BarChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <BarChart data={data} margin={CHART_MARGIN}>
+          <CartesianGrid strokeDasharray={GRID_DASH} stroke={GRID} />
           <XAxis
             dataKey="label"
-            tick={{ fontSize: 11, fill: "#94a3b8" }}
-            label={{ value: paramKey, position: "insideBottom", offset: -4, fill: "#64748b", fontSize: 11 }}
+            tick={AXIS_TICK}
+            label={{
+              value: paramKey,
+              position: "insideBottom",
+              offset: -4,
+              fill: "#64748b",
+              fontSize: 11,
+            }}
           />
-          <YAxis
-            tick={{ fontSize: 11, fill: "#94a3b8" }}
-            width={60}
-            tickFormatter={(v) => formatMetric(v, metric)}
-          />
+          <YAxis tick={AXIS_TICK} width={60} tickFormatter={(v) => formatMetric(v, metric)} />
           <Tooltip
-            contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+            contentStyle={TOOLTIP_STYLE}
             formatter={(v: number) => [formatMetric(v, metric), metric]}
             labelFormatter={(l) => `${paramKey} = ${l}`}
           />

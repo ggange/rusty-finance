@@ -1,4 +1,5 @@
 import { AssetRow } from "./AssetRow";
+import { Button } from "../ui/Button";
 import type { Dataset, StrategyMeta } from "../../types/api";
 import type { PortfolioForm } from "../../state/usePortfolioForm";
 
@@ -26,13 +27,13 @@ export function AssetList({ strategies, datasets, form }: AssetListProps) {
         />
       ))}
 
-      <button
-        type="button"
+      <Button
+        variant="ghost"
         onClick={form.addAsset}
-        className="w-full rounded-md border border-dashed border-slate-600 px-3 py-2 text-sm font-medium text-sky-300 hover:bg-slate-700/40"
+        className="w-full border border-dashed border-slate-600 text-sky-300 hover:bg-slate-700/40 hover:text-sky-200"
       >
         + Add asset
-      </button>
+      </Button>
 
       <p className="text-center text-xs text-slate-500">
         Capital is split by weight (normalized). Weights sum to{" "}

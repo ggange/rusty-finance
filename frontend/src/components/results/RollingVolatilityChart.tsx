@@ -7,6 +7,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import {
+  AXIS_TICK,
+  CHART_MARGIN,
+  GRID,
+  GRID_DASH,
+  SERIES,
+  TOOLTIP_STYLE,
+} from "../../lib/chartTheme";
 import { formatPct } from "../../lib/format";
 import type { RollingPoint } from "../../types/api";
 
@@ -26,34 +34,22 @@ export function RollingVolatilityChart({ data }: RollingVolatilityChartProps) {
   return (
     <div className="h-48 w-full">
       <ResponsiveContainer>
-        <AreaChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+        <AreaChart data={data} margin={CHART_MARGIN}>
           <defs>
             <linearGradient id="rvFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#6366f1" stopOpacity={0.3} />
-              <stop offset="100%" stopColor="#6366f1" stopOpacity={0.05} />
+              <stop offset="0%" stopColor={SERIES.volatility} stopOpacity={0.3} />
+              <stop offset="100%" stopColor={SERIES.volatility} stopOpacity={0.05} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-          <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#94a3b8" }} minTickGap={40} />
-          <YAxis
-            tick={{ fontSize: 11, fill: "#94a3b8" }}
-            width={56}
-            tickFormatter={(v) => formatPct(v, 1)}
-          />
-          <Tooltip
-            contentStyle={{
-              background: "#0f172a",
-              border: "1px solid #334155",
-              borderRadius: 8,
-              fontSize: 12,
-            }}
-            formatter={(v: number) => formatPct(v)}
-          />
+          <CartesianGrid strokeDasharray={GRID_DASH} stroke={GRID} />
+          <XAxis dataKey="date" tick={AXIS_TICK} minTickGap={40} />
+          <YAxis tick={AXIS_TICK} width={56} tickFormatter={(v) => formatPct(v, 1)} />
+          <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => formatPct(v)} />
           <Area
             type="monotone"
             dataKey="value"
             name="Rolling vol (ann.)"
-            stroke="#6366f1"
+            stroke={SERIES.volatility}
             strokeWidth={1.5}
             fill="url(#rvFill)"
           />
