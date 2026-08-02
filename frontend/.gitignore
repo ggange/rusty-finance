@@ -3,3 +3,9 @@ dist
 dist-ssr
 *.local
 .vite
+
+# TypeScript build output. `tsc -b` rewrites these on every build, so tracking
+# them makes every commit carry unrelated churn. The .ts sources are the truth.
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts

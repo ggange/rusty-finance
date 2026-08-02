@@ -235,15 +235,19 @@ export interface SweepResponse {
 }
 
 // ─── /runs ──────────────────────────────────────────────────────────────────
+// The scheduler writes its cycle summaries into the same `runs` table
+// (api/scheduler.py), so this list interleaves backtests with tick summaries.
+export type RunKind = "backtest" | "portfolio" | "scheduled_tick";
+
 export interface RunListItem {
   id: number;
   created_at: string;
-  kind: "backtest" | "portfolio";
-  config: BacktestRequest | PortfolioRequest;
+  kind: RunKind;
+  config: BacktestRequest | PortfolioRequest | Record<string, unknown>;
 }
 
 export interface RunDetail extends RunListItem {
-  result: BacktestResponse | PortfolioResponse;
+  result: BacktestResponse | PortfolioResponse | ScheduleCycle;
 }
 
 export interface RunsResponse {
@@ -280,6 +284,266 @@ export interface WalkForwardFold {
 
 export interface WalkForwardResponse {
   folds: WalkForwardFold[];
+}
+
+// ─── /trade/* — the live trading loop ───────────────────────────────────────
+// Mirrors api/trading.py, api/scheduler.py, api/risk.py and api/broker.py.
+
+export interface TradePlanItem {
+  dataset: string;
+  strategy: StrategyRequest;
+  cash_allocation: number;
+}
+
+export interface TradePlan {
+  plan_id: string;
+  created_at: string;
+  updated_at: string;
+  enabled: boolean;
+  items: TradePlanItem[];
+}
+
+export interface TradePlansResponse {
+  plans: TradePlan[];
+}
+
+export interface TradePlanRequest {
+  plan_id: string;
+  items: TradePlanItem[];
+  enabled: boolean;
+}
+
+/** The three guardrail fields; null means "no limit for this field". */
+export interface RiskLimits {
+  max_position_value: number | null;
+  max_daily_loss: number | null;
+  max_daily_orders: number | null;
+}
+
+export interface RiskLimitsRow extends RiskLimits {
+  plan_id: string;
+  updated_at: string;
+}
+
+export interface RiskLimitsRequest extends Partial<RiskLimits> {
+  plan_id: string;
+}
+
+export interface LimitsListResponse {
+  limits: RiskLimitsRow[];
+}
+
+/**
+ * Limits for one plan. `effective` is what the loop actually enforces: the
+ * plan's own row layered field-by-field over the global row.
+ */
+export interface LimitsForPlan {
+  plan_id: string;
+  effective: RiskLimits;
+  plan: RiskLimitsRow | null;
+  global: RiskLimitsRow | null;
+}
+
+export interface KillSwitch {
+  engaged: boolean;
+  reason: string | null;
+  updated_at: string | null;
+}
+
+/** Order status as reported by the venue. */
+export type OrderStatus =
+  | "accepted"
+  | "partially_filled"
+  | "filled"
+  | "rejected"
+  | "canceled";
+
+export interface OrderRow {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  plan_id: string;
+  symbol: string;
+  strategy: string;
+  side: "buy" | "sell";
+  qty: number;
+  broker: string;
+  broker_order_id: string;
+  status: OrderStatus;
+  filled_qty: number;
+  avg_fill_price: number;
+  reason: string | null;
+  intent_id: number | null;
+}
+
+export interface OrdersResponse {
+  orders: OrderRow[];
+}
+
+export interface IntentRow {
+  id: number;
+  created_at: string;
+  plan_id: string;
+  symbol: string;
+  strategy: string;
+  side: "buy" | "sell";
+  qty: number;
+  price: number;
+  signal: string;
+  reason: string | null;
+  status: string;
+  realized_pnl: number | null;
+}
+
+export interface IntentsResponse {
+  intents: IntentRow[];
+}
+
+export interface PositionRow {
+  plan_id: string;
+  symbol: string;
+  strategy: string;
+  qty: number;
+  avg_price: number;
+  updated_at: string;
+}
+
+export interface PositionsResponse {
+  positions: PositionRow[];
+}
+
+export interface BrokerOrder {
+  broker_order_id: string;
+  status: OrderStatus;
+  filled_qty: number;
+  avg_fill_price: number;
+  reason: string | null;
+  ts: string;
+}
+
+export interface TradeIntent {
+  side: "buy" | "sell";
+  qty: number;
+  price: number;
+  reason: string;
+  status: string;
+  allowed: boolean;
+  rejected_reason: string | null;
+  realized_pnl: number | null;
+  order: BrokerOrder | null;
+}
+
+export interface TickItemResult {
+  symbol: string;
+  signal: "buy" | "sell" | "hold";
+  date: string;
+  close: number;
+  /** Null when the signal produced no action (e.g. hold, or already flat). */
+  intent: TradeIntent | null;
+}
+
+export interface DriftRow {
+  symbol: string;
+  ledger_qty: number;
+  broker_qty: number;
+  delta: number;
+}
+
+export interface ReconcileResult {
+  broker: string;
+  in_sync: boolean;
+  checked: number;
+  drift: DriftRow[];
+}
+
+export interface SyncedOrder {
+  order_id: number;
+  symbol: string;
+  from: OrderStatus;
+  to: OrderStatus;
+  newly_filled: number;
+}
+
+export interface TickResult {
+  plan_id: string;
+  results: TickItemResult[];
+  positions: PositionRow[];
+  limits: RiskLimits;
+  kill_switch: KillSwitch;
+  synced_orders: SyncedOrder[];
+  reconciliation: ReconcileResult;
+}
+
+export interface TradeTickRequest {
+  plan_id: string;
+  items?: TradePlanItem[];
+}
+
+export interface RefreshResult {
+  ticker: string;
+  status: "ok" | "no_data" | "error";
+  added?: number;
+  total?: number;
+  start?: string;
+  end?: string;
+  error?: string;
+}
+
+/** One plan's outcome inside a scheduled cycle. */
+export type CyclePlanResult =
+  | (TickResult & { status: "ok" })
+  | { plan_id: string; status: "error"; error: string };
+
+export interface ScheduleCycle {
+  started_at: string;
+  finished_at: string;
+  refreshed: RefreshResult[];
+  plans_run: number;
+  plans_failed: number;
+  intents_emitted: number;
+  results: CyclePlanResult[];
+}
+
+export interface CronConfig {
+  day_of_week: string;
+  hour: number;
+  minute: number;
+  timezone: string;
+}
+
+export interface ScheduleStatus {
+  enabled: boolean;
+  running: boolean;
+  refresh_data: boolean;
+  cron: CronConfig;
+  next_run: string | null;
+  /** The most recent `scheduled_tick` run row, result included. */
+  last_run: (RunListItem & { result: ScheduleCycle }) | null;
+}
+
+export interface BrokerInfo {
+  kind: string;
+  slippage: number;
+  fill_ratio: number;
+  name: string;
+  /** True when orders reach a real venue. Gates fail-closed risk checks. */
+  is_live: boolean;
+}
+
+export interface SoakReport {
+  plan_id: string | null;
+  orders: number;
+  filled: number;
+  rejected: number;
+  /** Filled qty over requested qty; null when nothing was requested. */
+  fill_rate: number | null;
+  slippage_bps: {
+    samples: number;
+    mean: number | null;
+    worst: number | null;
+    note: string;
+  };
+  realized_pnl: number;
 }
 
 // FastAPI error envelope (422 has a detail array; 503 has a detail string).

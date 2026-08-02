@@ -7,39 +7,35 @@ import { SweepForm } from "./components/sweep/SweepForm";
 import { SweepResultsPanel } from "./components/sweep/SweepResultsPanel";
 import { WalkForwardForm } from "./components/walkforward/WalkForwardForm";
 import { WalkForwardResultsPanel } from "./components/walkforward/WalkForwardResultsPanel";
+import { TradingConsole } from "./components/trading/TradingConsole";
+import { useTradeConsole } from "./hooks/useTradeConsole";
 import { useStrategies } from "./hooks/useStrategies";
 import { useDatasets } from "./hooks/useDatasets";
 import { usePortfolio } from "./hooks/usePortfolio";
 import { useRunHistory } from "./hooks/useRunHistory";
 import { useSweep } from "./hooks/useSweep";
 import { useWalkForward } from "./hooks/useWalkForward";
+import { StatusPill } from "./components/ui/StatusPill";
 import { usePortfolioForm } from "./state/usePortfolioForm";
 import type { PortfolioResponse, RunDetail } from "./types/api";
 
-type AppTab = "backtest" | "sweep" | "walkforward";
+type AppTab = "backtest" | "sweep" | "walkforward" | "trading";
+
+const TABS: Array<{ key: AppTab; label: string }> = [
+  { key: "backtest", label: "Portfolio backtest" },
+  { key: "sweep", label: "Parameter sweep" },
+  { key: "walkforward", label: "Walk-forward" },
+  { key: "trading", label: "Trading" },
+];
 
 function HealthBadge({
   engine,
 }: {
   engine: "available" | "unavailable" | null;
 }) {
-  const label =
-    engine === "available"
-      ? "engine: available"
-      : engine === "unavailable"
-        ? "engine: unavailable"
-        : "engine: …";
-  const color =
-    engine === "available"
-      ? "bg-emerald-500/15 text-emerald-300 border-emerald-600/40"
-      : engine === "unavailable"
-        ? "bg-amber-500/15 text-amber-300 border-amber-600/40"
-        : "bg-slate-700/40 text-slate-400 border-slate-600";
-  return (
-    <span className={`rounded-full border px-3 py-1 text-xs font-medium ${color}`}>
-      {label}
-    </span>
-  );
+  if (engine === "available") return <StatusPill tone="ok">engine: available</StatusPill>;
+  if (engine === "unavailable") return <StatusPill tone="warn">engine: unavailable</StatusPill>;
+  return <StatusPill>engine: …</StatusPill>;
 }
 
 export default function App() {
@@ -51,6 +47,9 @@ export default function App() {
   const sweep = useSweep();
   const walkForward = useWalkForward();
   const [tab, setTab] = useState<AppTab>("backtest");
+  // Only fetches while the Trading tab is showing — no background polling of
+  // the trading API from the backtest views.
+  const tradeConsole = useTradeConsole(tab === "trading");
   const [sweepMetric, setSweepMetric] = useState("sharpe_ratio");
   const [wfMetric, setWfMetric] = useState("sharpe_ratio");
 
@@ -113,15 +112,16 @@ export default function App() {
           <>
             {/* Tab strip */}
             <div className="mb-0 flex gap-1 border-b border-slate-700">
-              <button type="button" className={tabClass("backtest")} onClick={() => setTab("backtest")}>
-                Portfolio backtest
-              </button>
-              <button type="button" className={tabClass("sweep")} onClick={() => setTab("sweep")}>
-                Parameter sweep
-              </button>
-              <button type="button" className={tabClass("walkforward")} onClick={() => setTab("walkforward")}>
-                Walk-forward
-              </button>
+              {TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  className={tabClass(t.key)}
+                  onClick={() => setTab(t.key)}
+                >
+                  {t.label}
+                </button>
+              ))}
             </div>
 
             {tab === "backtest" && (
@@ -190,6 +190,15 @@ export default function App() {
                   metric={wfMetric}
                 />
               </div>
+            )}
+
+            {tab === "trading" && (
+              <TradingConsole
+                console={tradeConsole}
+                datasets={datasets}
+                strategies={strategies}
+                engineAvailable={!!engineAvailable}
+              />
             )}
           </>
         )}
