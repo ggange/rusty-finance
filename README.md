@@ -178,6 +178,52 @@ new bars, the strategy re-reads the same last bar, and the buy/sell decision is
 idempotent — so a holiday tick is a no-op rather than a duplicate order. The same
 property makes `POST /trade/schedule/run` safe to invoke repeatedly.
 
+## Risk Guardrails & Kill Switch
+
+Every order passes through one chokepoint (`api.risk.evaluate`) before it can
+reach a broker. Nothing bypasses it.
+
+```bash
+# Global limits (fallback for every plan)
+curl -X POST localhost:8000/trade/limits -H 'Content-Type: application/json' \
+  -d '{"max_position_value": 5000, "max_daily_loss": 500, "max_daily_orders": 10}'
+
+# Per-plan override — layered field-by-field over the global row
+curl -X POST localhost:8000/trade/limits -H 'Content-Type: application/json' \
+  -d '{"plan_id": "paper-rsi", "max_position_value": 2000}'
+
+curl "localhost:8000/trade/limits?plan_id=paper-rsi"   # effective limits
+
+# Manual halt
+curl -X POST localhost:8000/trade/killswitch -H 'Content-Type: application/json' \
+  -d '{"engaged": true, "reason": "manual review"}'
+curl -X POST localhost:8000/trade/killswitch -d '{"engaged": false}'
+```
+
+| Limit | Effect |
+|-------|--------|
+| `max_position_value` | Rejects an entry whose notional (`qty × price`) exceeds the cap |
+| `max_daily_loss` | Blocks new entries once realized loss today reaches the cap |
+| `max_daily_orders` | Caps orders submitted per day — a runaway-loop guard |
+
+Two deliberate asymmetries, both toward safety:
+
+* **Limits constrain entries, never exits.** A limit exists to stop the system
+  taking on *more* risk; blocking a sell would strand capital in a position the
+  strategy wants out of. Risk-reducing orders always pass.
+* **The kill switch halts everything, including exits.** A halt that still
+  traded would not be a halt. It is stored in SQLite, so a halted system stays
+  halted across an API restart until a human explicitly releases it.
+
+Rejected orders are written to the intent log with a `rejected: <reason>` status
+and leave the position ledger untouched, so a blocked trade is auditable rather
+than invisible. Rejections don't consume the daily order budget.
+
+> ⚠️ **An unconfigured install is permissive** — no limits stored means
+> unlimited. That is tolerable while the only broker is `DryRunBroker`, and the
+> API logs a warning on every boot when no global limits are set. Setting global
+> limits is a hard prerequisite before any real broker is connected.
+
 ## Troubleshooting
 
 ### Backend
