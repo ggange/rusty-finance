@@ -9,7 +9,9 @@ Backtest technical strategies over real OHLCV data, optimise portfolio weights,
 validate out-of-sample with walk-forward analysis, and run the surviving
 strategies through a simulated trading loop with risk limits and a kill switch.
 
-![Portfolio backtest console — metrics, equity curve against buy & hold, and drawdown for a three-asset RSI portfolio with quarterly risk-parity rebalancing](docs/images/console.png)
+![Walk-forward validation of RSI on MSFT — five rolling folds comparing in-sample and out-of-sample Sharpe, with each fold's train and test window, selected parameters, and resulting scores](docs/images/walkforward.png)
+
+<sub>Walk-forward validation of RSI on MSFT: five rolling folds, parameters re-optimised on each training window, scored on data the optimiser never saw. Out-of-sample Sharpe exceeds in-sample in four of five folds.</sub>
 
 ## Why this repo might interest you
 
@@ -170,6 +172,13 @@ The backtesting engine expects CSV files with these headers:
 | Volume | integer | Shares traded |
 
 ## Portfolio Weight Optimization
+
+![Portfolio backtest console — metrics, equity curve against buy & hold, and drawdown for a three-asset RSI portfolio with quarterly risk-parity rebalancing](docs/images/console.png)
+
+<sub>A three-asset RSI portfolio with quarterly rebalancing and a solved static
+risk-parity allocation, at $1 commission and 0.1 % slippage. The benchmark
+overlay is deliberately unflattering here: concentrated buy-and-hold beats this
+strategy over the window, and the UI shows that rather than hiding it.</sub>
 
 Separate from the parameter sweep (which tunes a *strategy*), this chooses how
 much capital each asset gets. Five objectives, all long-only and fully invested:
