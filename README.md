@@ -9,8 +9,7 @@ Backtest technical strategies over real OHLCV data, optimise portfolio weights,
 validate out-of-sample with walk-forward analysis, and run the surviving
 strategies through a simulated trading loop with risk limits and a kill switch.
 
-<!-- SCREENSHOT: add a screenshot or GIF of the trading console here, e.g.
-     ![Trading console](docs/images/console.png) -->
+![Portfolio backtest console — metrics, equity curve against buy & hold, and drawdown for a three-asset RSI portfolio with quarterly risk-parity rebalancing](docs/images/console.png)
 
 ## Why this repo might interest you
 
