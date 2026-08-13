@@ -149,7 +149,7 @@ trading — see guiding principles 5 and 6.
   `order_intents` tables) + `POST /trade/tick` API endpoint. The whole
   data→signal→order-intent→persistence loop runs with zero financial risk;
   re-ticking while already long is a no-op. 18 tests green. Committed
-  `cc05ec9`.
+  `29d1a46`.
 - ✅ **Live data + scheduler.** Incremental fetch (`fetch_incremental` /
   `make refresh`) appends only bars newer than what's on disk, deduping on date
   so the trailing bar picks up post-close revisions; a failed fetch never

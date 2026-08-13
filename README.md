@@ -1,6 +1,57 @@
 # rusty-finance
 
-A financial backtesting monorepo: a high-performance Rust core, Python bindings via PyO3, a FastAPI REST layer, and a Vite+React 18 frontend.
+**A quantitative backtesting and paper-trading platform — Rust compute core, Python bindings, FastAPI service, React console.**
+
+[![CI](https://github.com/ggange/rusty-finance/actions/workflows/ci.yml/badge.svg)](https://github.com/ggange/rusty-finance/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Backtest technical strategies over real OHLCV data, optimise portfolio weights,
+validate out-of-sample with walk-forward analysis, and run the surviving
+strategies through a simulated trading loop with risk limits and a kill switch.
+
+<!-- SCREENSHOT: add a screenshot or GIF of the trading console here, e.g.
+     ![Trading console](docs/images/console.png) -->
+
+## Why this repo might interest you
+
+- **The strategies are tested, then eliminated.** [`docs/strategy-validation.md`](docs/strategy-validation.md)
+  runs 5-fold walk-forward validation across five assets and **cuts MACD and EMA
+  crossover for negative out-of-sample Sharpe**. Only RSI and Bollinger Bands are
+  cleared to trade. Nothing here is promoted on in-sample results.
+- **Compute in Rust, orchestration in Python.** The engine, metrics, optimiser
+  and walk-forward loop are Rust; PyO3 exposes them to a FastAPI layer, so the
+  hot path stays fast without giving up the Python ecosystem.
+- **The risk layer fails closed.** Brokers declare `is_live` truthfully, and the
+  risk engine refuses to submit through a live venue until limits are configured.
+  Order flow is idempotent and reconcilable; a kill switch halts everything.
+- **Gradient-projection weight optimisation** onto the simplex, with static and
+  dynamically rebalanced policies.
+- **CI across all three stacks** — `cargo test`, `pytest`, Vitest + type-checked
+  production build, on every push.
+
+## Documentation
+
+| Doc | What it's for |
+|---|---|
+| **[docs/USER-GUIDE.md](docs/USER-GUIDE.md)** | **Start here if you're using the platform.** A walkthrough of every tab, how to read the metrics, and the mistakes the defaults let you make |
+| [docs/READING-LIST.md](docs/READING-LIST.md) | Curated literature behind the engine, with a suggested reading order |
+| [docs/strategy-validation.md](docs/strategy-validation.md) | Walk-forward results for all six built-in strategies |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What's built, what's next, and the decision log |
+| This README | Installation, build, and troubleshooting reference |
+
+## Disclaimer
+
+This project is **for research and educational purposes only**. It is not
+investment advice, and it is not a production trading system.
+
+No component of this repository trades real money. Every bundled broker
+(`dry_run`, `paper_sim`, `simulated_paper`) is a simulation, and each reports
+`is_live = False`. No brokerage credentials are included or required. Backtested
+and walk-forward results are historical simulations that exclude many real-world
+frictions; **past performance does not indicate future results**. If you adapt
+this code to place real orders, you do so entirely at your own risk.
+
+## Repository layout
 
 ```
 backtesting/          Rust library — strategies, engine, portfolio, metrics
@@ -200,6 +251,16 @@ cargo run --release -p backtesting --example optimize_bench
 ```
 
 ## Market Data
+
+> **Data provenance.** The bundled CSVs (`AAPL`, `MSFT`, `GOOG`, `SPY`, `NVDA`,
+> 2020-01-01 → 2024-12-31) are split- and dividend-adjusted OHLCV bars retrieved
+> from Yahoo Finance via [`yfinance`](https://github.com/ranaroussi/yfinance).
+> They are included **solely as a small, fixed sample so the project is
+> clone-and-run and its results are reproducible** — they are not redistributed
+> as a data product, carry no warranty of accuracy, and remain subject to Yahoo
+> Finance's terms of use. Regenerate them yourself at any time with `make
+> fetch-all`, or point the API at your own licensed data via
+> `RUSTY_FINANCE_DATA_DIR`.
 
 Datasets live in `data/datasets/` as one CSV per symbol. Two ways to populate them:
 

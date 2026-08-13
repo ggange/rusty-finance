@@ -23,4 +23,7 @@ data/*.csv
 .DS_Store
 .idea/
 .vscode/
+
+# Local agent/tooling state — machine-specific, never source
 .gstack/
+.claude/

@@ -26,6 +26,14 @@ export RUSTY_FINANCE_DATA_DIR=/path/to/my/csvs
 OHLCV data fetched from Yahoo Finance (2020-01-01 → 2024-12-31, ~1260 bars each).
 Prices are dividend/split-adjusted so returns are honest.
 
+**Provenance and terms.** These bars were retrieved from Yahoo Finance via
+[`yfinance`](https://github.com/ranaroussi/yfinance) and are bundled only as a
+small fixed sample, so the repo is clone-and-run and published results are
+reproducible. They are not offered as a data product, come with no warranty of
+accuracy or completeness, and remain subject to Yahoo Finance's terms of use.
+Regenerate them with `make fetch-all`, or supply your own licensed data and
+point the API at it with `RUSTY_FINANCE_DATA_DIR`.
+
 ## Fetching more data
 
 Use the included fetcher script to add any ticker:
