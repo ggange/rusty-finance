@@ -209,6 +209,9 @@ export interface OptimizeRequest {
 export interface OptimizeResponse {
   symbols: string[];
   observations: number;
+  /** The window actually estimated over: the intersection of the datasets'
+   *  dates, which is generally narrower than any one dataset's full range. */
+  window: { start: string; end: string };
   weights: number[];
   expected_volatility: number;
   expected_return: number;

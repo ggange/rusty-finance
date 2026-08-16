@@ -130,6 +130,108 @@ def test_null_lookback_uses_all_history(datasets):
     assert everything > limited
 
 
+def _write_csv(path, start: str, rows: list[float]) -> None:
+    """Write a dataset whose bars start at `start` and step one calendar day."""
+    from datetime import date, timedelta
+
+    y, m, d = (int(p) for p in start.split("-"))
+    day = date(y, m, d)
+    lines = ["Date,Open,High,Low,Close,Volume"]
+    for close in rows:
+        lines.append(f"{day.isoformat()},{close},{close},{close},{close},1000")
+        day += timedelta(days=1)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _misaligned_catalog(tmp_path):
+    """Two datasets that overlap only at the end, with the volatility regimes
+    swapped between LONG's early period and the shared window.
+
+    LONG is wild before the overlap begins and almost flat inside it; SHORT is
+    moderately volatile throughout. So min-variance should load up on LONG when
+    the estimate is taken over the *overlapping* dates — and do the opposite if
+    it is taken over LONG's unrelated early history.
+    """
+    # 60 wild bars, then 40 nearly flat ones.
+    long_rows = [100.0 * (1.08 if i % 2 else 0.94) for i in range(60)]
+    long_rows += [100.0 + (0.05 if i % 2 else -0.05) for i in range(40)]
+    # 40 moderately volatile bars, covering only LONG's flat tail.
+    short_rows = [100.0 * (1.01 if i % 2 else 0.99) for i in range(40)]
+
+    _write_csv(tmp_path / "LONG.csv", "2020-01-01", long_rows)
+    _write_csv(tmp_path / "SHORT.csv", "2020-03-01", short_rows)
+    return ["LONG.csv", "SHORT.csv"]
+
+
+def test_covariance_is_estimated_on_overlapping_dates(tmp_path, monkeypatch):
+    """Datasets with different histories must be aligned by date, not by index.
+
+    Truncating each series to the shortest length pairs LONG's January with
+    SHORT's March — a covariance between two different periods, which measures
+    nothing. Here that mistake is visible in the weights: LONG is the volatile
+    one in January and the quiet one in the shared window.
+    """
+    names = _misaligned_catalog(tmp_path)
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path))
+
+    body = client.post(
+        "/portfolio/optimize",
+        json={
+            "datasets": names,
+            "lookback": None,
+            "optimizer": {"objective": "min_variance", "shrinkage": 0.0},
+        },
+    ).json()
+
+    long_w = body["weights"][body["symbols"].index("LONG")]
+    assert long_w > 0.8, (
+        "min-variance should favour LONG, which is nearly flat over the shared "
+        f"window; got {long_w:.3f} — the estimate is using LONG's early history"
+    )
+
+
+def test_the_estimation_window_is_the_overlap_and_is_reported(tmp_path, monkeypatch):
+    names = _misaligned_catalog(tmp_path)
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path))
+
+    body = client.post(
+        "/portfolio/optimize", json={"datasets": names, "lookback": None}
+    ).json()
+
+    # SHORT starts 2020-03-01 and its first bar yields no return, so the shared
+    # return axis opens on 03-02 and closes on SHORT's last bar, 04-09.
+    assert body["window"] == {"start": "2020-03-02", "end": "2020-04-09"}
+    assert body["observations"] == 39
+
+
+def test_lookback_counts_back_from_the_shared_window(tmp_path, monkeypatch):
+    """`lookback` must slice the aligned axis, not each series independently.
+
+    Applied per series from the end, two datasets ending on different dates come
+    out offset by the gap between them.
+    """
+    names = _misaligned_catalog(tmp_path)
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path))
+
+    body = client.post(
+        "/portfolio/optimize", json={"datasets": names, "lookback": 10}
+    ).json()
+    assert body["observations"] == 10
+    assert body["window"]["end"] == "2020-04-09"
+
+
+def test_non_overlapping_datasets_are_rejected(tmp_path, monkeypatch):
+    _write_csv(tmp_path / "EARLY.csv", "2020-01-01", [100.0 + i for i in range(30)])
+    _write_csv(tmp_path / "LATE.csv", "2021-01-01", [100.0 + i for i in range(30)])
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", str(tmp_path))
+
+    r = client.post(
+        "/portfolio/optimize", json={"datasets": ["EARLY.csv", "LATE.csv"], "lookback": None}
+    )
+    assert r.status_code == 422
+    assert "overlap" in r.json()["detail"].lower()
+
+
 def test_unknown_dataset_is_a_404(datasets):
     r = client.post("/portfolio/optimize", json={"datasets": [datasets[0], "NOPE.csv"]})
     assert r.status_code == 404

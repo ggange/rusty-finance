@@ -505,34 +505,60 @@ def optimize_portfolio(req: OptimizeRequest):
     """
     _require_engine()
 
-    series: list[list[float]] = []
+    by_date: list[dict[str, float]] = []
     symbols: list[str] = []
     for name in req.datasets:
         candles = _load_dataset(name)
-        closes = [c["close"] for c in candles]
-        if len(closes) < 2:
+        if len(candles) < 2:
             raise HTTPException(status_code=422, detail=f"dataset {name!r} has too few bars")
-        returns = [
-            closes[i] / closes[i - 1] - 1.0 if closes[i - 1] else 0.0
-            for i in range(1, len(closes))
-        ]
-        if req.lookback is not None:
-            returns = returns[-req.lookback:]
-        series.append(returns)
+        returns: dict[str, float] = {}
+        prev: float | None = None
+        for c in candles:
+            close = c["close"]
+            if prev is not None:
+                returns[c["date"]] = close / prev - 1.0 if prev else 0.0
+            prev = close
+        by_date.append(returns)
         symbols.append(name.rsplit(".", 1)[0])
 
-    shortest = min(len(s) for s in series)
-    if shortest < 2:
+    # Align on dates before estimating anything. Series are *not* interchangeable
+    # by index: pairing one asset's 2020 with another's 2024 produces a
+    # covariance between two different periods, which measures nothing. Truncating
+    # to the shortest length does exactly that whenever histories differ in
+    # length, and `lookback` applied per series does it whenever they differ in
+    # *end* date — a stale CSV next to a freshly refreshed one, which the
+    # incremental fetcher makes routine since it only refreshes symbols named by
+    # a trade plan.
+    common: set[str] = set(by_date[0])
+    for returns in by_date[1:]:
+        common &= set(returns)
+    dates = sorted(common)
+
+    # `lookback` counts back along the aligned axis, so every asset contributes
+    # the same calendar window.
+    if req.lookback is not None:
+        dates = dates[-req.lookback:]
+
+    if len(dates) < 2:
         raise HTTPException(
-            status_code=422, detail="not enough overlapping history to estimate covariance"
+            status_code=422,
+            detail=(
+                "not enough overlapping history to estimate covariance: the "
+                f"datasets share {len(dates)} common dated return(s)"
+            ),
         )
+
+    series = [[returns[d] for d in dates] for returns in by_date]
 
     solution = json.loads(
         bt.optimize_weights(json.dumps(series), req.optimizer.model_dump_json())
     )
     return {
         "symbols": symbols,
-        "observations": shortest,
+        "observations": len(dates),
+        # The window actually estimated over, which is the intersection of the
+        # datasets' dates and generally not any single dataset's full range.
+        "window": {"start": dates[0], "end": dates[-1]},
         **solution,
         # Stated rather than implied: a max-Sharpe solve rests on mean returns,
         # which are estimated far less reliably than covariance.

@@ -137,10 +137,22 @@ pub fn mean_returns(returns: &[Vec<f64>]) -> Vec<f64> {
         .collect()
 }
 
-/// Annualized population covariance matrix from aligned daily return series.
+/// Annualized population covariance matrix from **date-aligned** daily return
+/// series.
 ///
-/// Series are truncated to the shortest length so the matrix stays consistent
-/// when assets have different history lengths.
+/// Alignment is the caller's responsibility, and it matters: index `k` must be
+/// the same calendar date in every series, or the result is a covariance between
+/// different periods, which measures nothing. This function has no dates and so
+/// cannot check or repair that — it can only see lengths.
+///
+/// Unequal lengths are not rejected — this is reachable from the FFI boundary,
+/// where a panic is worse than a defensible guess — but they are a caller bug.
+/// The fallback keeps the most recent `t` observations of each series: aligning
+/// on the *end* assumes the series share a last date, which is far more often
+/// true of price history than sharing a first one. Head alignment, the previous
+/// behaviour, assumes a shared *start* and so pairs a long history's oldest bars
+/// with a short history's newest — the worst of the available guesses. Callers
+/// with dates in hand should align before calling and not rely on either.
 pub fn covariance(returns: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let n = returns.len();
     if n == 0 {
@@ -151,13 +163,17 @@ pub fn covariance(returns: &[Vec<f64>]) -> Vec<Vec<f64>> {
         return vec![vec![0.0; n]; n];
     }
 
-    let means: Vec<f64> = returns.iter().map(|r| r[..t].iter().sum::<f64>() / t as f64).collect();
+    // Keep the trailing `t` observations of each series — a no-op when lengths
+    // are equal, as an aligned caller guarantees.
+    let aligned: Vec<&[f64]> = returns.iter().map(|r| &r[r.len() - t..]).collect();
+
+    let means: Vec<f64> = aligned.iter().map(|r| r.iter().sum::<f64>() / t as f64).collect();
 
     let mut cov = vec![vec![0.0; n]; n];
     for i in 0..n {
         for j in i..n {
             let c = (0..t)
-                .map(|k| (returns[i][k] - means[i]) * (returns[j][k] - means[j]))
+                .map(|k| (aligned[i][k] - means[i]) * (aligned[j][k] - means[j]))
                 .sum::<f64>()
                 / t as f64
                 * TRADING_DAYS;
@@ -409,8 +425,10 @@ where
 
 /// Solve for weights.
 ///
-/// `returns[i]` is asset `i`'s daily return series. Series need not be equal
-/// length; they are truncated to the shortest for covariance estimation.
+/// `returns[i]` is asset `i`'s daily return series. Series must be **date
+/// aligned**: index `k` is the same calendar date for every asset. See
+/// [`covariance`] for what happens if they are not, and why this function cannot
+/// fix it for you.
 ///
 /// Degenerate inputs (no assets, fewer than 2 observations, an all-zero
 /// covariance matrix) fall back to equal weight rather than failing — a
@@ -868,6 +886,27 @@ mod tests {
         let sol = optimize_weights(&r, &OptimizerConfig::new(Objective::RiskParity));
         assert!(sums_to_one(&sol.weights));
         assert!(sol.weights.iter().all(|&w| w.is_finite()));
+    }
+
+    #[test]
+    fn unequal_lengths_fall_back_to_the_most_recent_overlap() {
+        // Unequal lengths mean the caller failed to align, and this function has
+        // no dates to align with — but the guess it makes still matters. A's
+        // history is wild for 200 bars then quiet for 100; B covers 100 bars of
+        // moderate vol. Keeping the *trailing* overlap compares A's quiet stretch
+        // against B and weights A up. Keeping the leading overlap — the previous
+        // behaviour — would compare A's wild opening against B and weight it down,
+        // i.e. answer a question about a period B was never measured over.
+        let mut a = series(200, 0.05, 0.0, 991);
+        a.extend(series(100, 0.001, 0.0, 992));
+        let b = series(100, 0.01, 0.0, 993);
+
+        let sol = optimize_weights(&[a, b], &OptimizerConfig::new(Objective::InverseVolatility));
+        assert!(
+            sol.weights[0] > 0.8,
+            "expected the quiet trailing window to dominate, got {:?}",
+            sol.weights
+        );
     }
 
     #[test]

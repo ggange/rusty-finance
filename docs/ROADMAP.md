@@ -422,11 +422,28 @@ currently overstates what it knows. Each item is a metric with a paper behind it
     that the tie-break is still arbitrary, which is the reason for reporting the
     count rather than hiding it.
 
-  Not yet fixed, carried forward: `/portfolio/optimize` computing covariance
-  across calendar-misaligned series (it truncates to the shortest series by
-  taking the *head*, so a long and a short history are paired across different
-  calendar windows), and the upstream half of the zero-variance fix above.
-  Neither blocks item A.
+  - **`/portfolio/optimize` estimated covariance across calendar-misaligned
+    series.** Returns were built per dataset and passed positionally, so the Rust
+    side truncated to the shortest by taking the *head*: a 2,000-bar history
+    paired its **oldest** 499 returns with a 500-bar history's most recent ones —
+    a covariance between two different periods, which measures nothing. Two
+    datasets a year apart returned `200 OK` with a confidently computed answer.
+    `lookback` had the same defect on the other axis, slicing each series from its
+    own end, so a stale CSV beside a freshly refreshed one came out offset by the
+    gap — routine, since the incremental fetcher only refreshes symbols named by
+    a trade plan. Returns are now keyed by date, intersected across datasets, and
+    `lookback` counts back along that shared axis; a non-overlapping request is a
+    422 instead of a number. The response reports the `window` actually estimated
+    over, which is generally narrower than any single dataset's range.
+
+    `covariance()` keeps accepting unequal lengths — it is reachable from the FFI
+    boundary, where a panic is worse than a defensible guess — but now falls back
+    to the most recent overlap rather than the earliest, and its rustdoc states
+    that alignment is the caller's job. Head alignment was the worst of the
+    available guesses.
+
+  Not yet fixed, carried forward: the upstream half of the zero-variance fix
+  above. It does not block item A.
 
 - **Confidence intervals on every performance metric.** Stationary bootstrap
   (Politis & Romano 1994) over the return series, so autocorrelation and
