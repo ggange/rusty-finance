@@ -8,7 +8,7 @@ SimulatedPaperBroker.
 import asyncio
 import csv
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -73,6 +73,11 @@ def client(db_path):
     from api.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
+
+
+def _today() -> str:
+    """The day key daily_stats buckets on — UTC, matching run_tick."""
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def items(dataset="BUY.csv", cash=10_000.0):
@@ -271,6 +276,150 @@ def test_sync_completes_a_partially_filled_order(db_path):
 
     position = asyncio.run(db.get_position("p", "BUY", RSI2_KEY))
     assert position["qty"] == pytest.approx(200.0)
+
+
+def test_a_topped_up_exit_reports_its_realized_pnl(db_path, data_dir):
+    """PnL realized by a top-up fill must reach daily_stats, or max_daily_loss
+    is blind to the second half of every partial exit.
+
+    Realized PnL used to be computed once at submit time from the filled
+    quantity and written onto the intent row. A later top-up moved the ledger
+    correctly but recorded no PnL anywhere, so a partial exit that completed on
+    a subsequent tick contributed only its first half to the loss cap.
+    """
+    # Enter fully at 50, so the position is 200 shares at 50.
+    broker = SimulatedPaperBroker()
+    asyncio.run(trading.run_tick("p", items(), broker))
+    assert asyncio.run(db.get_position("p", "BUY", RSI2_KEY))["qty"] == pytest.approx(200.0)
+
+    entry_pnl = asyncio.run(db.daily_stats("p", _today()))["realized_pnl"]
+
+    # Exit at 200, but the venue only fills half.
+    write_csv(data_dir / "BUY.csv", make_candles([100.0] * 30 + [200.0]))
+    half = SimulatedPaperBroker(fill_ratio=0.5)
+    asyncio.run(trading.run_tick("p", items(), half))
+
+    after_partial = asyncio.run(db.daily_stats("p", _today()))["realized_pnl"]
+    # 100 of 200 shares sold at 200 against a 50 cost basis.
+    assert after_partial - entry_pnl == pytest.approx(15_000.0)
+
+    # The venue completes the remaining 100 shares between ticks.
+    open_rows = asyncio.run(db.list_open_orders("p"))
+    assert len(open_rows) == 1
+    order = half._orders[open_rows[0]["broker_order_id"]]
+    order.status = "filled"
+    order.filled_qty = 200.0
+
+    synced = asyncio.run(trading.sync_open_orders("p", half))
+    assert synced[0]["newly_filled"] == pytest.approx(100.0)
+
+    after_topup = asyncio.run(db.daily_stats("p", _today()))["realized_pnl"]
+    assert after_topup - entry_pnl == pytest.approx(30_000.0), (
+        "the topped-up half realized 15,000 more and daily_stats must see it"
+    )
+
+
+def test_soak_realized_pnl_includes_topped_up_fills(db_path, data_dir):
+    """/trade/soak reports realized PnL from the same source as the loss cap, so
+    a partial exit completed on a later tick is counted in full."""
+    asyncio.run(trading.run_tick("p", items(), SimulatedPaperBroker()))
+
+    write_csv(data_dir / "BUY.csv", make_candles([100.0] * 30 + [200.0]))
+    half = SimulatedPaperBroker(fill_ratio=0.5)
+    asyncio.run(trading.run_tick("p", items(), half))
+
+    open_rows = asyncio.run(db.list_open_orders("p"))
+    order = half._orders[open_rows[0]["broker_order_id"]]
+    order.status = "filled"
+    order.filled_qty = 200.0
+    asyncio.run(trading.sync_open_orders("p", half))
+
+    assert asyncio.run(db.total_realized_pnl("p")) == pytest.approx(30_000.0)
+
+
+def test_venue_rejections_consume_the_daily_order_budget(db_path):
+    """A venue rejection reached the broker, so it must count against
+    max_daily_orders.
+
+    daily_stats used to filter `status NOT LIKE 'rejected%'` to keep *pre-trade*
+    risk rejections from burning the budget — correct, since those never left the
+    process. But a venue rejection lands in the same status, so a symbol the
+    venue rejects on every tick incremented nothing and max_daily_orders could
+    never fire on it. Repeated venue rejections are the most likely runaway loop
+    in practice, which is exactly what that cap exists to bound.
+    """
+    broker = SimulatedPaperBroker(reject_symbols={"BUY"})
+    asyncio.run(trading.run_tick("p", items(), broker))
+
+    orders = asyncio.run(db.list_orders(plan_id="p"))
+    assert len(orders) == 1 and orders[0]["status"] == "rejected"
+
+    stats = asyncio.run(db.daily_stats("p", _today()))
+    assert stats["orders"] == 1, (
+        "a venue rejection reached the broker and must consume order budget"
+    )
+
+
+def test_repeated_venue_rejections_trip_the_order_cap(db_path):
+    """The runaway this cap exists to bound, end to end.
+
+    A symbol the venue rejects on every tick produces an order every time. With
+    the budget counted correctly, the cap eventually refuses to submit; while
+    venue rejections were invisible the loop could retry forever.
+    """
+    asyncio.run(db.set_limits(db.GLOBAL_LIMITS, max_daily_orders=2))
+    broker = SimulatedPaperBroker(reject_symbols={"BUY"})
+
+    for _ in range(2):
+        asyncio.run(trading.run_tick("p", items(), broker))
+    assert asyncio.run(db.daily_stats("p", _today()))["orders"] == 2
+
+    third = asyncio.run(trading.run_tick("p", items(), broker))
+    intent = third["results"][0]["intent"]
+    assert intent["allowed"] is False
+    assert "max_daily_orders" in intent["status"]
+    # The refused attempt never reached the venue, so still exactly two orders.
+    assert len(asyncio.run(db.list_orders(plan_id="p"))) == 2
+
+
+def test_a_topped_up_loss_trips_the_daily_loss_cap(db_path, data_dir):
+    """The loss-cap counterpart: a loss realized by a top-up must be able to
+    block the next entry, not just be recorded."""
+    # Enter at 50 (200 shares), then exit at 10 with only half filling.
+    asyncio.run(trading.run_tick("p", items(), SimulatedPaperBroker()))
+    write_csv(data_dir / "BUY.csv", make_candles([5.0] * 30 + [10.0]))
+    half = SimulatedPaperBroker(fill_ratio=0.5)
+    asyncio.run(trading.run_tick("p", items(), half))
+
+    # Cap the loss above what the first half realized (-4,000) but below the
+    # full exit (-8,000), so only the topped-up half can trip it.
+    asyncio.run(db.set_limits(db.GLOBAL_LIMITS, max_daily_loss=6_000.0))
+    assert asyncio.run(db.daily_stats("p", _today()))["realized_pnl"] == pytest.approx(-4_000.0)
+
+    open_rows = asyncio.run(db.list_open_orders("p"))
+    order = half._orders[open_rows[0]["broker_order_id"]]
+    order.status = "filled"
+    order.filled_qty = 200.0
+    asyncio.run(trading.sync_open_orders("p", half))
+
+    assert asyncio.run(db.daily_stats("p", _today()))["realized_pnl"] == pytest.approx(-8_000.0)
+
+    # Now a fresh entry must be refused by the loss cap.
+    write_csv(data_dir / "BUY.csv", BUY_CANDLES)
+    body = asyncio.run(trading.run_tick("p", items(), SimulatedPaperBroker()))
+    intent = body["results"][0]["intent"]
+    assert intent["allowed"] is False
+    assert "max_daily_loss" in intent["status"]
+
+
+def test_pretrade_rejections_do_not_consume_the_budget(db_path):
+    """The other side of the asymmetry: a risk rejection sent nothing, so it must
+    not burn the budget — otherwise one misconfigured limit locks the plan out."""
+    asyncio.run(db.set_limits(db.GLOBAL_LIMITS, max_position_value=1.0))
+    asyncio.run(trading.run_tick("p", items(), SimulatedPaperBroker()))
+
+    assert asyncio.run(db.list_orders(plan_id="p")) == []
+    assert asyncio.run(db.daily_stats("p", _today()))["orders"] == 0
 
 
 def test_sync_ignores_terminal_orders(db_path):

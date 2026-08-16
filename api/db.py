@@ -40,8 +40,32 @@ CREATE TABLE IF NOT EXISTS order_intents (
     price      REAL NOT NULL,
     signal     TEXT NOT NULL,
     reason     TEXT NOT NULL,
-    status     TEXT NOT NULL
+    status     TEXT NOT NULL,
+    -- Whether this intent was actually submitted to a venue. Distinguishes a
+    -- pre-trade risk rejection (never left the process) from a venue rejection
+    -- (did), which the `status` string alone cannot: both read "rejected...".
+    reached_broker INTEGER NOT NULL DEFAULT 0
 );
+-- One row per PnL-realizing event, and the only thing `daily_stats` sums.
+--
+-- PnL cannot live on the intent row alone: an exit that fills partially at
+-- submit and completes on a later tick realizes PnL twice, at two different
+-- times, and `max_daily_loss` has to see both on the days they happened.
+-- `order_intents.realized_pnl` is kept as a denormalized display value for the
+-- submit-time portion; this table is the source of truth.
+CREATE TABLE IF NOT EXISTS realized_pnl_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    plan_id    TEXT NOT NULL,
+    symbol     TEXT NOT NULL,
+    strategy   TEXT NOT NULL,
+    qty        REAL NOT NULL,
+    amount     REAL NOT NULL,
+    source     TEXT NOT NULL,  -- 'submit' | 'topup'
+    order_id   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pnl_events_day
+    ON realized_pnl_events (plan_id, created_at);
 CREATE TABLE IF NOT EXISTS orders (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at      TEXT NOT NULL,
@@ -102,6 +126,11 @@ CREATE TABLE IF NOT EXISTS kill_switch (
 # explicitly on every init.
 _MIGRATIONS = [
     ("order_intents", "realized_pnl", "ALTER TABLE order_intents ADD COLUMN realized_pnl REAL"),
+    (
+        "order_intents",
+        "reached_broker",
+        "ALTER TABLE order_intents ADD COLUMN reached_broker INTEGER NOT NULL DEFAULT 0",
+    ),
 ]
 
 
@@ -479,14 +508,19 @@ async def venue_orders_all(broker: str | None = None) -> list[dict]:
 
 
 async def total_realized_pnl(plan_id: str | None = None) -> float:
-    """Sum of realized PnL across all recorded exits."""
+    """Sum of realized PnL across all recorded exits.
+
+    Reads `realized_pnl_events`, the same source `daily_stats` uses, so a partial
+    exit that the venue completed on a later tick is counted in full. Summing
+    `order_intents.realized_pnl` instead would report only the portion that
+    filled at submit time.
+    """
     await init_db()
     async with aiosqlite.connect(_db_path()) as db:
-        sql = ("SELECT COALESCE(SUM(COALESCE(realized_pnl, 0)), 0) FROM order_intents "
-               "WHERE status NOT LIKE 'rejected%'")
+        sql = "SELECT COALESCE(SUM(amount), 0) FROM realized_pnl_events"
         params: tuple = ()
         if plan_id is not None:
-            sql += " AND plan_id=?"
+            sql += " WHERE plan_id=?"
             params = (plan_id,)
         cur = await db.execute(sql, params)
         return float((await cur.fetchone())[0] or 0.0)
@@ -610,22 +644,43 @@ async def set_kill_switch(engaged: bool, reason: str | None = None) -> dict:
 async def daily_stats(plan_id: str, day: str) -> dict:
     """Orders submitted and realized PnL for a plan on a given UTC date (YYYY-MM-DD).
 
-    Only intents that actually reached the broker count — rejected ones are
-    logged with a "rejected:" status and must not consume the daily budget.
+    Feeds `max_daily_orders` and `max_daily_loss`, so what it counts *is* what
+    those guards can see.
+
+    **Orders** counts intents that actually reached a venue, via the explicit
+    `reached_broker` flag. Filtering on the status string instead cannot express
+    this: a pre-trade risk rejection and a venue rejection both read "rejected",
+    and only the first should be free. A pre-trade rejection sent nothing, so
+    charging it would let one misconfigured limit lock a plan out; a venue
+    rejection did send something, and a symbol the venue rejects every tick is
+    precisely the runaway `max_daily_orders` exists to bound.
+
+    **Realized PnL** sums `realized_pnl_events` rather than the intent rows,
+    because an exit can realize PnL more than once — partially at submit, and
+    again whenever the venue tops the fill up on a later tick.
     """
     await init_db()
     async with aiosqlite.connect(_db_path()) as db:
         cur = await db.execute(
             """
-            SELECT COUNT(*), COALESCE(SUM(COALESCE(realized_pnl, 0)), 0)
-            FROM order_intents
+            SELECT COUNT(*) FROM order_intents
             WHERE plan_id = ?
               AND substr(created_at, 1, 10) = ?
-              AND status NOT LIKE 'rejected%'
+              AND reached_broker = 1
             """,
             (plan_id, day),
         )
-        count, pnl = await cur.fetchone()
+        (count,) = await cur.fetchone()
+
+        cur = await db.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) FROM realized_pnl_events
+            WHERE plan_id = ?
+              AND substr(created_at, 1, 10) = ?
+            """,
+            (plan_id, day),
+        )
+        (pnl,) = await cur.fetchone()
     return {"orders": int(count or 0), "realized_pnl": float(pnl or 0.0)}
 
 
@@ -693,6 +748,7 @@ async def record_intent(
     reason: str,
     status: str,
     realized_pnl: float | None = None,
+    reached_broker: bool = False,
 ) -> int:
     await init_db()
     ts = datetime.now(timezone.utc).isoformat()
@@ -701,14 +757,43 @@ async def record_intent(
             """
             INSERT INTO order_intents
               (created_at, plan_id, symbol, strategy, side, qty, price, signal,
-               reason, status, realized_pnl)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               reason, status, realized_pnl, reached_broker)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (ts, plan_id, symbol, strategy, side, qty, price, signal, reason,
-             status, realized_pnl),
+             status, realized_pnl, 1 if reached_broker else 0),
         )
         await db.commit()
         return cur.lastrowid
+
+
+async def record_realized_pnl(
+    plan_id: str,
+    symbol: str,
+    strategy: str,
+    qty: float,
+    amount: float,
+    source: str,
+    order_id: int | None = None,
+) -> None:
+    """Log a PnL-realizing event on the day it happened.
+
+    `source` is 'submit' for the portion that filled when the order was sent and
+    'topup' for quantity the venue filled later. Both must be visible to
+    `max_daily_loss`, and on their own days.
+    """
+    await init_db()
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute(
+            """
+            INSERT INTO realized_pnl_events
+              (created_at, plan_id, symbol, strategy, qty, amount, source, order_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (ts, plan_id, symbol, strategy, qty, amount, source, order_id),
+        )
+        await db.commit()
 
 
 async def list_intents(plan_id: str | None = None, limit: int = 50) -> list[dict]:

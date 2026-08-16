@@ -442,6 +442,35 @@ currently overstates what it knows. Each item is a metric with a paper behind it
     that alignment is the caller's job. Head alignment was the worst of the
     available guesses.
 
+  - **Both daily risk guards could silently fail to fire.** `max_daily_orders`
+    and `max_daily_loss` are only as good as what `daily_stats` counts, and it
+    was under-counting both inputs.
+
+    `max_daily_orders` filtered `status NOT LIKE 'rejected%'` to keep *pre-trade*
+    risk rejections from burning the budget — correct, since those never left the
+    process, and charging them would let one misconfigured limit lock a plan out.
+    But a *venue* rejection lands in the same status string, so a symbol the venue
+    rejects on every tick incremented nothing and the cap could never fire on it.
+    Repeated venue rejections are the most likely runaway loop in practice, which
+    is precisely what the cap exists to bound. Intents now carry an explicit
+    `reached_broker` flag, which expresses the distinction the status string
+    cannot.
+
+    `max_daily_loss` saw only the portion of an exit that filled at submit time.
+    Realized PnL was computed once and written onto the intent row; when
+    `sync_open_orders` later folded in newly filled quantity it moved the ledger
+    correctly but recorded no PnL anywhere, so the second half of every partial
+    exit was invisible to the cap — and to `/trade/soak`. PnL now goes to a
+    `realized_pnl_events` table, one row per realizing event tagged
+    `submit`/`topup`, which is the single source of truth for both the cap and
+    the soak report. An events table rather than a column because an exit can
+    realize PnL on more than one day, and the cap has to see each amount on the
+    day it happened. `order_intents.realized_pnl` stays as a display value.
+
+    Tested by firing the guards, not just by checking the counters: repeated
+    venue rejections now trip the order cap, and a loss realized only by a
+    top-up now blocks the next entry.
+
   Not yet fixed, carried forward: the upstream half of the zero-variance fix
   above. It does not block item A.
 

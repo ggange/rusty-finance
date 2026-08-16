@@ -92,19 +92,27 @@ def decide(
     return None  # hold
 
 
+def exit_pnl(side: str, position: dict | None, qty: float, price: float) -> float | None:
+    """PnL realized by selling `qty` at `price`, or None if nothing is realized.
+
+    `position` must be the state *before* the fill is applied, since its
+    `avg_price` is the cost basis the sold shares were acquired at.
+    """
+    if side != "sell" or not position or qty <= 0:
+        return None
+    return (price - position["avg_price"]) * qty
+
+
 def realized_pnl(intent: OrderIntent, position: dict | None, order=None) -> float | None:
     """Realized PnL for an exit, or None for an entry (which realizes nothing).
 
     Computed from the *filled* quantity and price when an order is supplied, so
-    a partial exit realizes only the part that actually sold.
+    a partial exit realizes only the part that actually sold. The remainder is
+    realized later, by `sync_open_orders`, if and when the venue fills it.
     """
-    if intent.side != "sell" or not position:
-        return None
     qty = order.filled_qty if order is not None else intent.qty
     price = order.avg_fill_price if order is not None and order.filled_qty else intent.price
-    if qty <= 0:
-        return None
-    return (price - position["avg_price"]) * qty
+    return exit_pnl(intent.side, position, qty, price)
 
 
 async def apply_fill_to_ledger(
@@ -160,9 +168,26 @@ async def sync_open_orders(plan_id: str, broker) -> list[dict]:
         if newly_filled > 0:
             position = await db.get_position(plan_id, row["symbol"], row["strategy"])
             delta = SimpleFill(newly_filled, latest.avg_fill_price)
+            # Read PnL off the pre-update position, whose avg_price is still the
+            # cost basis the topped-up shares were bought at.
+            topup_pnl = exit_pnl(
+                row["side"], position, newly_filled, latest.avg_fill_price
+            )
             await apply_fill_to_ledger(
                 plan_id, row["symbol"], row["strategy"], row["side"], position, delta
             )
+            if topup_pnl is not None:
+                # Without this the second half of a partial exit moves the
+                # ledger but is invisible to max_daily_loss.
+                await db.record_realized_pnl(
+                    plan_id=plan_id,
+                    symbol=row["symbol"],
+                    strategy=row["strategy"],
+                    qty=newly_filled,
+                    amount=topup_pnl,
+                    source="topup",
+                    order_id=row["id"],
+                )
         synced.append({
             "order_id": row["id"],
             "symbol": row["symbol"],
@@ -262,7 +287,21 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
                 reason=intent.reason,
                 status=status,
                 realized_pnl=pnl,
+                # An order that reached the venue counts against the daily
+                # budget even if the venue rejected it; a pre-trade rejection
+                # never left the process and does not.
+                reached_broker=order is not None,
             )
+
+            if pnl is not None and order is not None:
+                await db.record_realized_pnl(
+                    plan_id=plan_id,
+                    symbol=symbol,
+                    strategy=strategy_key,
+                    qty=order.filled_qty,
+                    amount=pnl,
+                    source="submit",
+                )
 
             if order is not None:
                 await db.record_order(
