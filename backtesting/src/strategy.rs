@@ -3,7 +3,6 @@ pub mod ma;
 pub mod macd;
 pub mod bollinger_bands;
 
-use std::collections::VecDeque;
 use serde::Serialize;
 use crate::data::Candle;
 
@@ -36,12 +35,3 @@ pub enum Signal {
     Hold,
 }
 
-pub(crate) trait VecDequeExt {
-    fn make_contiguous_copy(&self) -> Vec<f64>;
-}
-
-impl VecDequeExt for VecDeque<f64> {
-    fn make_contiguous_copy(&self) -> Vec<f64> {
-        self.iter().copied().collect()
-    }
-}

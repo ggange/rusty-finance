@@ -57,6 +57,25 @@ than "this earns 1.18." What does *not* survive is any statement of the form
 "strategy X achieves Sharpe Y," and in particular any comparison of test against
 train at fold level — see the note under RSI.
 
+**The engine has changed since this run (2026-08-16).** Three fixes landed after
+these results were produced, so the numbers below describe code that no longer
+exists. All three make the re-run non-optional rather than merely nicer:
+
+1. **RSI's smoothing was wrong.** It was a window-dependent fold, not Wilder's
+   running average, and it read a flat series as maximally overbought (RSI 100 →
+   Sell) instead of neutral. RSI is the primary strategy in this document, so
+   **every RSI figure here was produced by a different indicator than the one now
+   implemented.**
+2. **Test folds cold-started their indicators.** Each test slice re-ran the
+   strategy from scratch, paying a second warm-up. A 20-period Bollinger band on
+   a 75-bar test fold lost roughly a quarter of the window before it could
+   signal — which is a more plausible explanation of the "no-signal folds"
+   attributed below to selectivity than selectivity is.
+3. **Parameter ties resolved silently to the first grid entry.** Any combo that
+   never fired scored exactly 0.0, so ties were common; the winner was then just
+   grid index 0. Where that happened, the "recommended params" below were not
+   selected at all. Folds now report a tie count.
+
 **What replaces this.** Horizon 5 item A in [ROADMAP.md](ROADMAP.md): stationary-bootstrap
 confidence intervals on every metric, Deflated Sharpe on the parameter search,
 probability of backtest overfitting via CSCV, and combinatorial purged CV to

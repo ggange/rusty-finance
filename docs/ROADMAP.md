@@ -351,14 +351,49 @@ currently overstates what it knows. Each item is a metric with a paper behind it
     together, since the two are displayed side by side as strategy vs
     buy-and-hold and must share a convention. The residual bar-count assumption
     (wrong for non-daily candles) is now stated in the rustdoc.
-  - **A zero-variance asset attracted the entire portfolio.** The degeneracy
-    guard fired only when *every* diagonal was zero. One asset with no movement
-    in the estimation window — a mid-window listing, or a short history under
-    the API's default 252-bar warm-up — reads as riskless to every
-    covariance-consuming objective, and min-variance converged to 100 % of the
-    asset it had no information about while reporting ~zero expected volatility.
-    Covariance-consuming objectives now solve over the observed assets only;
-    `EqualWeight` is exempt because it never reads the matrix.
+  - **RSI was not computing Wilder's RSI, and read a flat series as maximally
+    overbought.** Three defects in the project's primary surviving strategy.
+    (a) `avg_loss == 0` returned RSI 100 — but a *flat* window has no upside
+    either, and no movement is neutral (50), not overbought; a halted or thinly
+    traded symbol with repeated closes emitted **Sell**. (b) The first bar was
+    seeded with a synthetic zero change, so the first real RSI mixed `period − 1`
+    observations with one fabricated one, and the documented warm-up did not
+    match the code. (c) The "Wilder smoothing" re-seeded from the oldest value
+    in a rolling `period`-length window and folded forward on every call, making
+    the result a function of the window's contents rather than of the whole
+    history — neither Wilder's RSI nor a simple-average RSI, despite the doc
+    claiming Wilder. Now a genuine running Wilder average: seeded once from the
+    simple mean of the first `period` changes, then advanced as
+    `(avg × (period − 1) + change) / period`. A test pins the defining property
+    — two series with identical trailing changes but different histories now
+    report different RSI, which a windowed average could not do.
+
+    **This changes RSI's output on real data**, so every RSI figure in
+    `docs/strategy-validation.md` predates the strategy now implemented. Noted
+    there.
+  - ⚠️ **Reverted: excluding zero-variance assets from the weight solve.** The
+    review found that the degeneracy guard fires only when *every* covariance
+    diagonal is zero, so one flat asset reads as riskless and min-variance loads
+    up on the asset it has least information about. That is a real hazard and
+    the finding was correct — but the proposed fix, treating a zero-variance
+    column as unusable, is **wrong for this engine**, and shipping it caused a
+    regression that `test_min_variance_beats_equal_weight_at_every_solve`
+    caught.
+
+    The reason: `optimize_weights` cannot distinguish "the window holds no
+    information about this asset" from "the strategy was in cash all window".
+    Both produce an identically flat NAV series, and cash genuinely *is*
+    riskless. Excluding flat columns therefore breaks min-variance's defining
+    guarantee — predicted volatility never above equal weight, which is always
+    a feasible point — whenever a strategy sits out a window. Correcting RSI
+    made exactly that happen, which is how the latent break surfaced.
+
+    Reverted, with the hazard pinned by
+    `a_single_flat_asset_is_treated_as_riskless` and the invariant it must not
+    break pinned by `min_variance_never_predicts_more_risk_than_equal_weight`.
+    The real fix belongs upstream in `portfolio_backtest.rs`, where per-asset
+    first-bar dates are known and the two cases *are* distinguishable — carried
+    forward as part of this item.
 
 - ✅ **Walk-forward warm start and tie reporting (2026-08-16).** The two defects
   from the same review that bore directly on this item's rewrite of
@@ -388,8 +423,10 @@ currently overstates what it knows. Each item is a metric with a paper behind it
     count rather than hiding it.
 
   Not yet fixed, carried forward: `/portfolio/optimize` computing covariance
-  across calendar-misaligned series, and RSI returning 100/Sell on a flat window
-  (plus its "Wilder smoothing" not being Wilder's). Neither blocks item A.
+  across calendar-misaligned series (it truncates to the shortest series by
+  taking the *head*, so a long and a short history are paired across different
+  calendar windows), and the upstream half of the zero-variance fix above.
+  Neither blocks item A.
 
 - **Confidence intervals on every performance metric.** Stationary bootstrap
   (Politis & Romano 1994) over the return series, so autocorrelation and

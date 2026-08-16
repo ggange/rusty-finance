@@ -437,33 +437,14 @@ pub fn optimize_weights(returns: &[Vec<f64>], cfg: &OptimizerConfig) -> WeightSo
         return WeightSolution::degenerate(n);
     }
 
-    // A *single* zero-variance asset is the dangerous case, and it is not the
-    // same as a riskless one: variance is zero because the window contains no
-    // information about the asset (it listed mid-window, or its history is
-    // short), not because it cannot move. Every covariance-consuming objective
-    // reads that as "perfectly safe" and piles in — min-variance converges to
-    // 100 % of the asset it knows least about, reporting ~zero expected
-    // volatility while doing it. Solve over the observed assets only and leave
-    // the rest at zero weight.
-    //
-    // EqualWeight is exempt: it never looks at the covariance matrix, so 1/n
-    // must stay 1/n.
-    if cfg.objective != Objective::EqualWeight {
-        let observed: Vec<usize> = (0..n).filter(|&i| cov[i][i] > 0.0).collect();
-        if observed.len() < n {
-            let sub: Vec<Vec<f64>> = observed.iter().map(|&i| returns[i].clone()).collect();
-            // Recursion terminates: every asset in `sub` has positive variance,
-            // and shrinkage leaves the diagonal untouched.
-            let sub_sol = optimize_weights(&sub, cfg);
-            let mut weights = vec![0.0; n];
-            let mut risk_contribution = vec![0.0; n];
-            for (k, &i) in observed.iter().enumerate() {
-                weights[i] = sub_sol.weights[k];
-                risk_contribution[i] = sub_sol.risk_contribution[k];
-            }
-            return WeightSolution { weights, risk_contribution, ..sub_sol };
-        }
-    }
+    // NOTE: a *single* zero-variance asset is a known hazard here, and it is
+    // deliberately not handled at this layer. See
+    // `a_single_flat_asset_is_treated_as_riskless` for why the obvious fix is
+    // wrong: this function cannot distinguish "the window holds no information
+    // about this asset" from "the strategy was in cash", and cash genuinely is
+    // riskless. Excluding zero-variance columns breaks min-variance's defining
+    // guarantee whenever a strategy sits out a window. The fix belongs upstream,
+    // where first-bar dates are known.
 
     let (weights, iterations, hit_limit) = match cfg.objective {
         Objective::EqualWeight => {
@@ -822,42 +803,55 @@ mod tests {
     }
 
     #[test]
-    fn an_unobserved_asset_is_excluded_not_treated_as_riskless() {
-        // B has no movement inside the estimation window — because we have no
-        // information about it, not because it is riskless. A solver that reads
-        // variance 0 as "safe" allocates ~everything to the one asset it knows
-        // nothing about, and reports expected_volatility ≈ 0 while doing it.
-        // This is reachable in practice: a recently listed ticker under the
-        // API's default 252-bar static warm-up.
-        let a = series(120, 0.012, 0.0003, 971);
-        let b = vec![0.0; 120];
-        for objective in [
-            Objective::MinVariance,
-            Objective::RiskParity,
-            Objective::InverseVolatility,
-            Objective::MaxSharpe,
-        ] {
-            let sol = optimize_weights(&[a.clone(), b.clone()], &OptimizerConfig::new(objective));
-            assert!(sums_to_one(&sol.weights), "{objective:?}: {:?}", sol.weights);
-            assert!(
-                sol.weights[1] < 1e-6,
-                "{objective:?} put {} into the unobserved asset",
-                sol.weights[1]
-            );
-            assert!(
-                sol.expected_volatility > 0.0,
-                "{objective:?} reported zero risk for a risky book"
-            );
-        }
+    fn a_single_flat_asset_is_treated_as_riskless() {
+        // KNOWN LIMITATION, pinned deliberately rather than fixed here.
+        //
+        // B never moves inside the window, so min-variance loads up on it and
+        // reports ~zero expected volatility for the book. When B is flat because
+        // the window predates its first bar, that is wrong and dangerous: the
+        // solver is allocating to the asset it has no information about.
+        //
+        // But this function cannot tell that case apart from a strategy that sat
+        // in *cash* for the window, which produces an identically flat NAV series
+        // and genuinely is riskless — and correctly so, since holding cash has no
+        // variance. Excluding zero-variance columns therefore breaks
+        // min-variance's defining guarantee (predicted vol never above equal
+        // weight, which is always a feasible point) any time a strategy sits out
+        // a window. That is not a hypothetical: it is what
+        // `test_min_variance_beats_equal_weight_at_every_solve` catches.
+        //
+        // The distinction lives upstream, where per-asset first-bar dates are
+        // known. Tracked in ROADMAP.md Horizon 5A.
+        let r = vec![series(120, 0.012, 0.0003, 971), vec![0.0; 120]];
+        let sol = optimize_weights(&r, &OptimizerConfig::new(Objective::MinVariance));
+        assert!(sums_to_one(&sol.weights));
+        assert!(
+            sol.weights[1] > 0.99,
+            "documenting current behaviour: min-variance loads the flat asset, got {:?}",
+            sol.weights
+        );
     }
 
     #[test]
-    fn equal_weight_still_holds_an_unobserved_asset() {
-        // EqualWeight never reads the covariance matrix, so exclusion would be
-        // wrong here — 1/n means 1/n.
-        let r = vec![series(120, 0.012, 0.0003, 972), vec![0.0; 120]];
-        let sol = optimize_weights(&r, &OptimizerConfig::new(Objective::EqualWeight));
-        assert!(sol.weights.iter().all(|&w| (w - 0.5).abs() < 1e-9), "{:?}", sol.weights);
+    fn min_variance_never_predicts_more_risk_than_equal_weight() {
+        // The defining guarantee: equal weight is always a feasible point, so the
+        // minimiser can never do worse. Includes a flat asset, because that is
+        // exactly the case where a zero-variance exclusion would violate it.
+        let cases: Vec<Vec<Vec<f64>>> = vec![
+            vec![series(200, 0.01, 0.0, 981), series(200, 0.02, 0.0, 982)],
+            vec![series(200, 0.01, 0.0, 983), vec![0.0; 200]],
+            vec![series(200, 0.005, 0.0, 984), series(200, 0.03, 0.0, 985), vec![0.0; 200]],
+        ];
+        for (i, r) in cases.iter().enumerate() {
+            let mv = optimize_weights(r, &OptimizerConfig::new(Objective::MinVariance));
+            let eq = optimize_weights(r, &OptimizerConfig::new(Objective::EqualWeight));
+            assert!(
+                mv.expected_volatility <= eq.expected_volatility + 1e-9,
+                "case {i}: min-variance predicted {} vs equal weight {}",
+                mv.expected_volatility,
+                eq.expected_volatility
+            );
+        }
     }
 
     #[test]

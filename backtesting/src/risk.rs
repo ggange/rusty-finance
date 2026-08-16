@@ -242,7 +242,7 @@ fn quantile_risk(returns: &[f64]) -> (f64, f64, f64, f64) {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = sorted.len();
 
-    let mut tail = |q: f64| {
+    let tail = |q: f64| {
         let idx = tail_index(q, n);
         let var = sorted[idx];
         let cvar = sorted[..=idx].iter().sum::<f64>() / (idx + 1) as f64;
