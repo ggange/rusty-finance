@@ -316,15 +316,29 @@ async def run_tick(plan_id: str, items: list[dict], broker: Broker) -> dict:
 
 
 async def soak_report(plan_id: str | None = None) -> dict:
-    """Evidence from the paper soak: did live execution match the backtest?
+    """Execution statistics from the trading loop: fill rate, rejections, PnL,
+    and the gap between `signal_price` and `avg_fill_price` in basis points.
 
-    Principle 5 says a backtest is only evidence until the same signals have run
-    on paper and agreed. The comparison that matters is per-order: the
-    backtester assumes a fill at the signal price, so the gap between
-    `signal_price` and `avg_fill_price` *is* the modelling error, in basis
-    points. A soak that shows near-zero mean slippage and a high fill rate is
-    the engine validating itself; a persistent adverse skew means the backtest
-    is optimistic and its results should be discounted before risking capital.
+    Read the slippage figure with two caveats, both of which mean it is *not*
+    the engine validating itself:
+
+    1. **Against a simulated broker it is circular.** `PersistentPaperBroker`
+       and `SimulatedPaperBroker` fill at `intent.price × (1 + slippage)`, and
+       this function measures the gap from `intent.price` — so it recovers the
+       configured slippage constant by construction and tells you nothing about
+       fill realism. Only a real venue makes this number informative.
+    2. **`signal_price` is the last bar's close, not the price the engine
+       assumes.** The default `FillTiming` is `next_open`, so the backtester
+       assumes a fill at the *next* bar's open. The bps figure below therefore
+       excludes the overnight gap, which for a loop that fires after the close
+       is the largest component of the real modelling error. Comparing against
+       the next open requires a bar that does not exist yet at signal time; it
+       has to be reconciled on the following tick.
+
+    What this report does measure honestly: fill rate, rejection count and
+    realized PnL. Principle 5's comparison — do live fills match what the
+    backtest assumed — is not yet implemented, and cannot be against a broker
+    whose fills we define.
     """
     orders = await db.list_orders(plan_id=plan_id, limit=100_000)
     venue = {o["broker_order_id"]: o for o in await db.venue_orders_all()}

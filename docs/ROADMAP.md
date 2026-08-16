@@ -264,15 +264,40 @@ Delivered:
   restart mid-soak doesn't manufacture phantom drift. Neither shipped broker is
   live. Endpoint: `GET /trade/broker`.
 - ✅ **Soak reporting.** `GET /trade/soak` compares realized fills against the
-  signal price the backtester would have assumed, in basis points, signed so
-  positive always means "worse than the backtest assumed" for both sides — plus
-  fill rate, rejections and realized PnL. This is principle 5 made measurable.
+  signal price, in basis points, signed so positive always means "worse than
+  assumed" for both sides — plus fill rate, rejections and realized PnL.
   24 new tests (216 Python total).
 
-  Validated by replaying 90 trading days of MSFT + NVDA (RSI-14, 8 bps
-  configured slippage) through the live loop: 22 orders, 100 % fill rate, mean
-  slippage measured at exactly 8.00 bps, **zero reconciliation drift across all
-  90 ticks**, ledger and venue agreeing at the end.
+  Exercised by replaying 90 trading days of MSFT + NVDA (RSI-14, 8 bps
+  configured slippage) through the live loop: 22 orders, 100 % fill rate,
+  **zero reconciliation drift across all 90 ticks**, ledger and venue agreeing
+  at the end.
+
+  > **Correction (2026-08-16): the slippage figure was not evidence of
+  > anything.** This bullet previously read "mean slippage measured at exactly
+  > 8.00 bps" and offered it as the backtest validating itself. Two defects,
+  > found in code review:
+  >
+  > 1. **The measurement is circular.** The simulated broker fills at
+  >    `intent.price × (1 + slippage)`, and the soak measures the gap between
+  >    the fill and `intent.price`. It can only ever return the configured
+  >    constant. Recovering *exactly* 8.00 bps from an 8 bps input was the tell:
+  >    a real measurement never lands precisely on its own input.
+  > 2. **It compares against the wrong reference price.** `intent.price` is the
+  >    last bar's **close**, but the engine's default fill timing is
+  >    `next_open`. So the metric omits the overnight gap — which for a loop
+  >    firing at 16:30 after the close is the largest single component of the
+  >    real modelling error, and the whole reason `next_open` was made the
+  >    default in Horizon 3.
+  >
+  > What the replay *did* establish stands: loop stability over 90 ticks,
+  > scheduler correctness, and zero reconciliation drift between ledger and
+  > venue. Those are real and were worth having. What it did not establish is
+  > anything about fill realism. Fixing the reference price to the next bar's
+  > open makes the metric meaningful, but it still cannot validate fills against
+  > a simulator whose fills we define — that genuinely needs a real venue, which
+  > is exactly what the withdrawn vendor item would have supplied. Principle 7
+  > applies to the platform's own self-measurement, not just to strategy Sharpes.
 
 Withdrawn (was: next up):
 
@@ -306,6 +331,43 @@ Ordered by value; A is the highest-leverage work in the repository.
 
 Pure compute, so it belongs in the Rust core, and it is where the platform
 currently overstates what it knows. Each item is a metric with a paper behind it.
+
+- ✅ **Correctness pass on the existing metrics (2026-08-16).** Prerequisite for
+  everything below: no value in bootstrapping a confidence interval around a
+  biased estimator. A code review found and this pass fixed three defects, each
+  red→green with a test naming the failure:
+  - **Historical VaR/CVaR selected the wrong order statistic.** `floor(q·n)`
+    sits one observation inside the body of the distribution, so the reported
+    tail loss was always too mild — and with exactly 5 losing days in 100 it
+    landed on the first *winning* day and reported a **positive** VaR-95. Now
+    `ceil(q·n) − 1`. The old test pinned the wrong values, so it was rewritten
+    rather than kept. CVaR-99's small-sample collapse (a 1 % tail is one day for
+    `n ≤ 100`, making CVaR-99 numerically equal to VaR-99) is now documented and
+    pinned as a known property.
+  - **CAGR annualised by the observation count instead of the return periods.**
+    An `n`-point curve spans `n − 1` returns. Small over years, material over a
+    walk-forward fold — and `cagr` is a selectable fold-ranking metric, so the
+    error reached parameter selection. Fixed in `Metrics` and `Benchmark`
+    together, since the two are displayed side by side as strategy vs
+    buy-and-hold and must share a convention. The residual bar-count assumption
+    (wrong for non-daily candles) is now stated in the rustdoc.
+  - **A zero-variance asset attracted the entire portfolio.** The degeneracy
+    guard fired only when *every* diagonal was zero. One asset with no movement
+    in the estimation window — a mid-window listing, or a short history under
+    the API's default 252-bar warm-up — reads as riskless to every
+    covariance-consuming objective, and min-variance converged to 100 % of the
+    asset it had no information about while reporting ~zero expected volatility.
+    Covariance-consuming objectives now solve over the observed assets only;
+    `EqualWeight` is exempt because it never reads the matrix.
+
+  Not yet fixed, found in the same review and carried forward: walk-forward ties
+  resolving silently to grid index 0, test slices cold-starting their indicators
+  instead of warm-starting from the train slice, `/portfolio/optimize` computing
+  covariance across calendar-misaligned series, and RSI returning 100/Sell on a
+  flat window. The first two matter for item A's rewrite of
+  `strategy-validation.md` — a 20-period band on a 75-bar test fold burns a
+  quarter of the window to warm-up, which is a more likely explanation of
+  Bollinger's "no-signal folds" than selectivity.
 
 - **Confidence intervals on every performance metric.** Stationary bootstrap
   (Politis & Romano 1994) over the return series, so autocorrelation and

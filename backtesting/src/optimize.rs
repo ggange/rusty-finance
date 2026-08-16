@@ -437,6 +437,34 @@ pub fn optimize_weights(returns: &[Vec<f64>], cfg: &OptimizerConfig) -> WeightSo
         return WeightSolution::degenerate(n);
     }
 
+    // A *single* zero-variance asset is the dangerous case, and it is not the
+    // same as a riskless one: variance is zero because the window contains no
+    // information about the asset (it listed mid-window, or its history is
+    // short), not because it cannot move. Every covariance-consuming objective
+    // reads that as "perfectly safe" and piles in — min-variance converges to
+    // 100 % of the asset it knows least about, reporting ~zero expected
+    // volatility while doing it. Solve over the observed assets only and leave
+    // the rest at zero weight.
+    //
+    // EqualWeight is exempt: it never looks at the covariance matrix, so 1/n
+    // must stay 1/n.
+    if cfg.objective != Objective::EqualWeight {
+        let observed: Vec<usize> = (0..n).filter(|&i| cov[i][i] > 0.0).collect();
+        if observed.len() < n {
+            let sub: Vec<Vec<f64>> = observed.iter().map(|&i| returns[i].clone()).collect();
+            // Recursion terminates: every asset in `sub` has positive variance,
+            // and shrinkage leaves the diagonal untouched.
+            let sub_sol = optimize_weights(&sub, cfg);
+            let mut weights = vec![0.0; n];
+            let mut risk_contribution = vec![0.0; n];
+            for (k, &i) in observed.iter().enumerate() {
+                weights[i] = sub_sol.weights[k];
+                risk_contribution[i] = sub_sol.risk_contribution[k];
+            }
+            return WeightSolution { weights, risk_contribution, ..sub_sol };
+        }
+    }
+
     let (weights, iterations, hit_limit) = match cfg.objective {
         Objective::EqualWeight => {
             (project_capped(&vec![1.0 / n as f64; n], cfg.max_weight), 0, false)
@@ -790,6 +818,45 @@ mod tests {
         let r = vec![vec![0.0; 50], vec![0.0; 50]];
         let sol = optimize_weights(&r, &OptimizerConfig::new(Objective::MinVariance));
         assert!(sums_to_one(&sol.weights));
+        assert!(sol.weights.iter().all(|&w| (w - 0.5).abs() < 1e-9), "{:?}", sol.weights);
+    }
+
+    #[test]
+    fn an_unobserved_asset_is_excluded_not_treated_as_riskless() {
+        // B has no movement inside the estimation window — because we have no
+        // information about it, not because it is riskless. A solver that reads
+        // variance 0 as "safe" allocates ~everything to the one asset it knows
+        // nothing about, and reports expected_volatility ≈ 0 while doing it.
+        // This is reachable in practice: a recently listed ticker under the
+        // API's default 252-bar static warm-up.
+        let a = series(120, 0.012, 0.0003, 971);
+        let b = vec![0.0; 120];
+        for objective in [
+            Objective::MinVariance,
+            Objective::RiskParity,
+            Objective::InverseVolatility,
+            Objective::MaxSharpe,
+        ] {
+            let sol = optimize_weights(&[a.clone(), b.clone()], &OptimizerConfig::new(objective));
+            assert!(sums_to_one(&sol.weights), "{objective:?}: {:?}", sol.weights);
+            assert!(
+                sol.weights[1] < 1e-6,
+                "{objective:?} put {} into the unobserved asset",
+                sol.weights[1]
+            );
+            assert!(
+                sol.expected_volatility > 0.0,
+                "{objective:?} reported zero risk for a risky book"
+            );
+        }
+    }
+
+    #[test]
+    fn equal_weight_still_holds_an_unobserved_asset() {
+        // EqualWeight never reads the covariance matrix, so exclusion would be
+        // wrong here — 1/n means 1/n.
+        let r = vec![series(120, 0.012, 0.0003, 972), vec![0.0; 120]];
+        let sol = optimize_weights(&r, &OptimizerConfig::new(Objective::EqualWeight));
         assert!(sol.weights.iter().all(|&w| (w - 0.5).abs() < 1e-9), "{:?}", sol.weights);
     }
 

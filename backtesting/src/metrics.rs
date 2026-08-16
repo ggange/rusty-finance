@@ -11,14 +11,17 @@ pub struct Benchmark {
 
 impl Benchmark {
     pub fn compute(initial_cash: f64, first_price: f64, last_price: f64, n_bars: usize) -> Self {
-        if first_price <= 0.0 || n_bars == 0 {
+        if first_price <= 0.0 || n_bars < 2 {
             return Self { total_return: 0.0, cagr: 0.0 };
         }
         let shares = (initial_cash / first_price) as u32;
         let cash_rem = initial_cash - shares as f64 * first_price;
         let end_nav = shares as f64 * last_price + cash_rem;
         let total_return = end_nav / initial_cash - 1.0;
-        let cagr = (end_nav / initial_cash).powf(252.0 / n_bars as f64) - 1.0;
+        // `n_bars` observations span `n_bars - 1` return periods. Must match
+        // `Metrics::compute`, since the two CAGRs are displayed side by side as
+        // strategy vs buy-and-hold.
+        let cagr = (end_nav / initial_cash).powf(252.0 / (n_bars - 1) as f64) - 1.0;
         Self { total_return, cagr }
     }
 }
@@ -28,7 +31,15 @@ impl Benchmark {
 pub struct Metrics {
     /// `last_nav / first_nav − 1`.
     pub total_return: f64,
-    /// Compound annual growth rate, assuming 252 trading days/year.
+    /// Compound annual growth rate, annualizing the `n − 1` return periods of
+    /// an `n`-point curve at 252 periods/year.
+    ///
+    /// **Assumes daily bars.** The factor comes from the observation count, not
+    /// from elapsed calendar time, so weekly or monthly candles are annualized
+    /// as though they were daily and the result is wrong by the frequency
+    /// ratio. Deriving the exponent from the curve's date span would be
+    /// frequency-agnostic; it is not done here because [`Benchmark`] receives
+    /// only a bar count and the two must agree.
     pub cagr: f64,
     /// Annualized standard deviation of daily returns.
     pub annualized_volatility: f64,
@@ -58,7 +69,11 @@ impl Metrics {
         let last_nav = curve[curve.len() - 1].nav;
         let n = curve.len();
         let total_return = last_nav / first_nav - 1.0;
-        let cagr = (last_nav / first_nav).powf(252.0 / n as f64) - 1.0;
+        // An `n`-point curve spans `n - 1` return periods, not `n`. The
+        // difference is negligible over years and material over a walk-forward
+        // fold, where `Metrics::cagr` can also be the ranking metric.
+        let periods = (n - 1) as f64;
+        let cagr = (last_nav / first_nav).powf(252.0 / periods) - 1.0;
 
         // Max drawdown
         let mut peak = first_nav;
@@ -107,7 +122,7 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
+    use chrono::{Duration, NaiveDate};
 
     fn ep(day: u32, nav: f64) -> EquityPoint {
         EquityPoint { date: NaiveDate::from_ymd_opt(2024, 1, day).unwrap(), nav }
@@ -176,9 +191,50 @@ mod tests {
     }
 
     #[test]
-    fn cagr_equals_total_return_over_one_year() {
-        // Over exactly 252 bars, CAGR == total_return
-        let b = Benchmark::compute(10000.0, 100.0, 150.0, 252);
-        assert!((b.cagr - b.total_return).abs() < 1e-6);
+    fn benchmark_cagr_equals_total_return_over_one_year() {
+        // 253 observations span 252 return periods = exactly one trading year,
+        // so annualizing must be a no-op.
+        let b = Benchmark::compute(10000.0, 100.0, 150.0, 253);
+        assert!((b.cagr - b.total_return).abs() < 1e-6, "cagr = {}", b.cagr);
+    }
+
+    #[test]
+    fn benchmark_single_bar_has_no_return_period() {
+        // One observation spans zero return periods; annualizing is undefined.
+        let b = Benchmark::compute(10000.0, 100.0, 150.0, 1);
+        assert_eq!(b.cagr, 0.0);
+    }
+
+    /// An equity point `i` days after 2024-01-01, for curves longer than a month.
+    fn ep_seq(i: usize, nav: f64) -> EquityPoint {
+        EquityPoint {
+            date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() + Duration::days(i as i64),
+            nav,
+        }
+    }
+
+    #[test]
+    fn cagr_annualizes_by_return_periods_not_observations() {
+        // 253 NAV observations = 252 daily returns = one trading year, so CAGR
+        // must equal total return exactly. Annualizing by the observation count
+        // instead uses 252/253 and undershoots.
+        let curve: Vec<EquityPoint> = (0..253)
+            .map(|i| ep_seq(i, 10_000.0 * 1.5_f64.powf(i as f64 / 252.0)))
+            .collect();
+        let m = Metrics::compute(&curve, &[]);
+        assert!((m.total_return - 0.5).abs() < 1e-9, "total = {}", m.total_return);
+        assert!((m.cagr - m.total_return).abs() < 1e-9, "cagr = {}", m.cagr);
+    }
+
+    #[test]
+    fn cagr_matches_benchmark_convention_on_the_same_span() {
+        // Metrics::cagr and Benchmark::cagr are shown side by side as strategy
+        // vs buy-and-hold, so they must annualize identically over one span.
+        let curve: Vec<EquityPoint> = (0..64)
+            .map(|i| ep_seq(i, 10_000.0 * 1.5_f64.powf(i as f64 / 63.0)))
+            .collect();
+        let m = Metrics::compute(&curve, &[]);
+        let b = Benchmark::compute(10_000.0, 100.0, 150.0, 64);
+        assert!((m.cagr - b.cagr).abs() < 1e-9, "metrics {} vs benchmark {}", m.cagr, b.cagr);
     }
 }

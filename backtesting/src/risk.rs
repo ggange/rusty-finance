@@ -208,9 +208,32 @@ impl RiskMetrics {
     }
 }
 
+/// Index of the historical `q`-quantile in an ascending series of `n` returns,
+/// using the lower estimator `ceil(q·n) − 1`: the tail is the worst `ceil(q·n)`
+/// observations, and VaR is the mildest loss in it.
+///
+/// Using `floor(q·n)` instead selects one order statistic too far into the body
+/// of the distribution, which always understates the tail loss and can invert
+/// the sign outright — with exactly 5 losing days in 100, `floor` lands on the
+/// first *winning* day and reports a positive VaR-95.
+fn tail_index(q: f64, n: usize) -> usize {
+    debug_assert!(n > 0, "tail_index requires a non-empty series");
+    let k = (q * n as f64).ceil().max(1.0) as usize;
+    k.min(n) - 1
+}
+
 /// Historical VaR and CVaR at 95% and 99% confidence.
 /// Returns (var_95, cvar_95, var_99, cvar_99).
 /// Both VaR and CVaR are negative for loss-making tail days.
+///
+/// CVaR is the mean of the tail *including* the VaR observation, which is the
+/// standard historical expected-shortfall estimator.
+///
+/// **Small-sample limitation.** The tail holds `ceil(q·n)` observations, so a
+/// 99 % tail is a single day for any `n ≤ 100` and CVaR-99 is then numerically
+/// equal to VaR-99 — an artifact of the sample size, not a property of the
+/// distribution. Treat CVaR-99 as uninformative below ~250 observations
+/// (one trading year), where the tail is still only 3 days wide.
 fn quantile_risk(returns: &[f64]) -> (f64, f64, f64, f64) {
     if returns.is_empty() {
         return (0.0, 0.0, 0.0, 0.0);
@@ -219,13 +242,15 @@ fn quantile_risk(returns: &[f64]) -> (f64, f64, f64, f64) {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = sorted.len();
 
-    let idx_95 = ((0.05 * n as f64).floor() as usize).min(n - 1);
-    let var_95 = sorted[idx_95];
-    let cvar_95 = sorted[..=idx_95].iter().sum::<f64>() / (idx_95 + 1) as f64;
+    let mut tail = |q: f64| {
+        let idx = tail_index(q, n);
+        let var = sorted[idx];
+        let cvar = sorted[..=idx].iter().sum::<f64>() / (idx + 1) as f64;
+        (var, cvar)
+    };
 
-    let idx_99 = ((0.01 * n as f64).floor() as usize).min(n - 1);
-    let var_99 = sorted[idx_99];
-    let cvar_99 = sorted[..=idx_99].iter().sum::<f64>() / (idx_99 + 1) as f64;
+    let (var_95, cvar_95) = tail(0.05);
+    let (var_99, cvar_99) = tail(0.01);
 
     (var_95, cvar_95, var_99, cvar_99)
 }
@@ -305,12 +330,10 @@ mod tests {
 
     #[test]
     fn var_and_cvar_on_known_returns() {
-        // 20 returns: 18 × +0.01, −0.05, −0.02.
-        // sorted: [−0.05, −0.02, 0.01, …]
-        // idx_95 = floor(0.05 × 20) = 1 → var_95 = −0.02
-        // cvar_95 = mean(−0.05, −0.02) = −0.035
-        // idx_99 = floor(0.01 × 20) = 0 → var_99 = −0.05
-        // cvar_99 = −0.05
+        // 20 returns: 18 × +0.01, −0.05, −0.02. sorted: [−0.05, −0.02, 0.01, …]
+        // 5 % of 20 is exactly 1 observation, so the tail is the single worst
+        // day and both VaR-95 and CVaR-95 are −0.05. 1 % of 20 rounds up to the
+        // same single observation.
         let mut rets = vec![0.01_f64; 18];
         rets.push(-0.05);
         rets.push(-0.02);
@@ -318,10 +341,51 @@ mod tests {
         let r_asset = rets.clone();
         let rm = mk(&["A"], vec![r_asset], &[1.0], &rets);
 
-        assert!((rm.var_95 - (-0.02)).abs() < 1e-9, "var_95 = {}", rm.var_95);
-        assert!((rm.cvar_95 - (-0.035)).abs() < 1e-9, "cvar_95 = {}", rm.cvar_95);
+        assert!((rm.var_95 - (-0.05)).abs() < 1e-9, "var_95 = {}", rm.var_95);
+        assert!((rm.cvar_95 - (-0.05)).abs() < 1e-9, "cvar_95 = {}", rm.cvar_95);
         assert!((rm.var_99 - (-0.05)).abs() < 1e-9, "var_99 = {}", rm.var_99);
         assert!((rm.cvar_99 - (-0.05)).abs() < 1e-9, "cvar_99 = {}", rm.cvar_99);
+    }
+
+    #[test]
+    fn var_95_is_the_fifth_worst_of_one_hundred_not_the_sixth() {
+        // Exactly 5 losing days in 100. The 5 % tail *is* those five days, so
+        // VaR-95 is the mildest of them (−0.06) and CVaR-95 their mean (−0.08).
+        // Selecting index floor(0.05·100) = 5 instead lands on the first
+        // *winning* day and reports a positive VaR — a tail loss of +1 %.
+        let mut rets = vec![0.01_f64; 95];
+        rets.extend_from_slice(&[-0.10, -0.09, -0.08, -0.07, -0.06]);
+
+        let rm = mk(&["A"], vec![rets.clone()], &[1.0], &rets);
+
+        assert!(rm.var_95 < 0.0, "var_95 should be a loss, got {}", rm.var_95);
+        assert!((rm.var_95 - (-0.06)).abs() < 1e-9, "var_95 = {}", rm.var_95);
+        assert!((rm.cvar_95 - (-0.08)).abs() < 1e-9, "cvar_95 = {}", rm.cvar_95);
+        // 1 % of 100 is one observation: the worst day.
+        assert!((rm.var_99 - (-0.10)).abs() < 1e-9, "var_99 = {}", rm.var_99);
+        assert!((rm.cvar_99 - (-0.10)).abs() < 1e-9, "cvar_99 = {}", rm.cvar_99);
+    }
+
+    #[test]
+    fn cvar_99_collapses_to_var_99_at_or_below_one_hundred_observations() {
+        // Documented limitation, not a bug: the 1 % tail holds ceil(0.01·n)
+        // observations, so it is a single day for any n ≤ 100 and CVaR-99 is
+        // then numerically identical to VaR-99. Pinned so the equality is a
+        // known property of the sample size rather than a surprise.
+        let mut short = vec![0.01_f64; 98];
+        short.extend_from_slice(&[-0.10, -0.09]);
+        assert_eq!(short.len(), 100);
+        let rm = mk(&["A"], vec![short.clone()], &[1.0], &short);
+        assert_eq!(rm.cvar_99, rm.var_99);
+        assert!((rm.var_99 - (-0.10)).abs() < 1e-9, "var_99 = {}", rm.var_99);
+
+        // Above 100 the tail widens to two days and the two measures separate.
+        let mut long = vec![0.01_f64; 148];
+        long.extend_from_slice(&[-0.10, -0.09]);
+        let rm2 = mk(&["A"], vec![long.clone()], &[1.0], &long);
+        assert!((rm2.var_99 - (-0.09)).abs() < 1e-9, "var_99 = {}", rm2.var_99);
+        assert!((rm2.cvar_99 - (-0.095)).abs() < 1e-9, "cvar_99 = {}", rm2.cvar_99);
+        assert!(rm2.cvar_99 < rm2.var_99);
     }
 
     #[test]
