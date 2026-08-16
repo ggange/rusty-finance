@@ -288,12 +288,25 @@ and do the selected parameters stay in the same neighbourhood? Parameters that
 jump from 5 to 40 to 12 across folds are fitting noise, and the strategy has no
 stable operating point regardless of how the test numbers look.
 
-**Don't read the magnitude at all.** A Sharpe computed from a ~75-bar test fold
-has a standard error of roughly ±1.8 once annualised, so a fold reporting 1.5 and
-a fold reporting 0.2 are not meaningfully different, and a test Sharpe *above*
-train tells you the folds are too short to compare rather than that the strategy
-is robust. Sign consistency and parameter stability are the signals here. The
-level is noise wearing a decimal point.
+**Don't read the magnitude at all — and the interval under each fold now shows
+you why.** A Sharpe from a ~75-bar test fold has a standard error near ±1.8 once
+annualised, so a fold reporting 1.5 and a fold reporting 0.2 are not meaningfully
+different, and a test Sharpe *above* train tells you the folds are too short to
+compare rather than that the strategy is robust. Sign consistency and parameter
+stability are the signals here. The level is noise wearing a decimal point.
+
+You no longer have to take that on trust: every fold's test cell carries a
+bootstrap confidence interval, and on real data they come out roughly
+`[−3, +3]` — visibly uninformative, which is the honest reading.
+
+**Read the "Pooled out-of-sample" panel first.** It stitches every fold's
+out-of-sample returns into one series and reports the interval for *that*. It is
+deliberately not the average of the folds: averaging treats each fold as an
+independent observation, while pooling treats the sequence as the single return
+path it actually is. Five folds of ~100 bars average to a number with no error
+bar; the same returns pooled are ~500 observations and support a real statement.
+If the pooled interval contains zero, the panel says so — that badge is the most
+important thing on the screen.
 
 `docs/strategy-validation.md` has this already run across all six strategies —
 RSI and Bollinger survived, MACD and EMA crossover were eliminated. Read it
@@ -302,10 +315,19 @@ any number from it.
 
 **Current gaps worth knowing:**
 
-- **No error bars anywhere yet.** Nothing in the UI reports a confidence interval,
-  and the sweep's "best combo" callout is an uncorrected arg-max over the grid.
-  Fixing that is the active roadmap item (Horizon 5A); until it lands, apply the
-  ±1.8 rule of thumb above by hand.
+- **Intervals cover sampling error, not selection.** Sharpe, Sortino and CAGR now
+  report a bootstrap confidence interval on the Backtest and Walk-forward tabs;
+  max drawdown reports a spread only, because block resampling breaks up the
+  multi-month trends that produce deep drawdowns and percentile endpoints there
+  would read as optimistic. What no interval fixes: the sweep's "best combo"
+  callout is still an uncorrected arg-max over the grid, so a winning cell is a
+  biased estimate no matter how tight its neighbours look. Deflated Sharpe is the
+  next roadmap item. The sweep grid deliberately shows no intervals at all — a
+  grid of independent 95 % bands invites exactly that misreading.
+- **A per-fold interval is not an interval for an average across folds**, and
+  folds over correlated assets in the same calendar window are not independent
+  observations. Use the pooled panel for a single-asset run; there is no
+  cross-asset pooling yet.
 - **Walk-forward validates strategy *parameters*, not weighting *objectives*.**
   You can ask "which RSI period holds up out-of-sample"; you can't yet ask "which
   weighting objective does." Given the max-Sharpe result in §6, that remains a

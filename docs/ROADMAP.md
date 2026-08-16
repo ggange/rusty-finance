@@ -474,13 +474,66 @@ currently overstates what it knows. Each item is a metric with a paper behind it
   Not yet fixed, carried forward: the upstream half of the zero-variance fix
   above. It does not block item A.
 
-- **Confidence intervals on every performance metric.** Stationary bootstrap
-  (Politis & Romano 1994) over the return series, so autocorrelation and
-  volatility clustering are preserved in the resamples — an IID bootstrap would
-  produce intervals that are too tight. Report Sharpe, CAGR, max drawdown and
-  Sortino as estimate + interval throughout the API and UI. Cross-check the
-  Sharpe interval against Lo (2002)'s analytic autocorrelation-adjusted standard
-  error as a unit-test oracle.
+- ✅ **Confidence intervals on every performance metric (2026-08-16).**
+  Stationary bootstrap (Politis & Romano 1994) in `backtesting/src/bootstrap.rs`:
+  geometric blocks with wrapping, so autocorrelation and volatility clustering
+  survive into the resamples. Sharpe, Sortino and CAGR report an interval on
+  `/backtest`, `/portfolio` (portfolio and per-asset) and each walk-forward fold's
+  out-of-sample metrics, rendered under the metric cards and in the fold table.
+  Zero new dependencies — the PRNG is a hand-rolled LCG matching the house style.
+
+  Correctness is pinned against theory, not just against itself: on AR(1) with
+  φ = 0.6 the long-run variance of the mean is inflated by (1+φ)/(1−φ) = 4, so a
+  standard-error ratio of exactly 2.0 is predicted against an IID control.
+  Measured 2.089, with 1.002 on independent returns — so the widening comes from
+  dependence in the data, not from the block machinery. The bootstrap also agrees
+  with the analytic Jobson-Korkie/Lo standard error to 6 % on independent data
+  while exceeding it 74 % on dependent data, which is the gap that justifies the
+  method.
+
+  Three deliberate departures from the item as originally written:
+
+  - **Max drawdown reports a standard error, not an interval.** It is a functional
+    of the whole path ordering, and blocks of a few bars destroy the multi-month
+    trends that produce deep drawdowns, so resampled drawdowns run systematically
+    milder than the observed one. Percentile endpoints would often sit entirely
+    *above* the point estimate and mislead about direction.
+  - **Lo (2002) is split in two, because the original framing conflated them.**
+    `sharpe_std_error_iid` is the oracle the bootstrap is checked against;
+    `lo_annualization_factor` reports that naive √252 annualisation overstates a
+    trending strategy's Sharpe. The factor η(q) scales the annualised Sharpe *and*
+    its standard error identically, so it cancels in the t-statistic and moves no
+    significance verdict — it corrects the point estimate, and widening the
+    interval under dependence is the bootstrap's job. A test pins the
+    cancellation.
+  - **Sweep cells and walk-forward *train* metrics are not bounded.** Both are
+    per-grid-cell hot paths, but the binding objection is statistical: a train
+    metric is an arg-max, and an interval around a selected maximum has no valid
+    frequentist reading. A grid of independent 95 % bands invites reading
+    selection as free, which is what Deflated Sharpe exists to correct.
+
+  **Added beyond the item: the pooled out-of-sample interval**, and it is the more
+  valuable half. `run_walk_forward` stitches every fold's test returns into one
+  series and bounds that, reported as `oos_metrics` with its own UI panel. This is
+  not the average of the per-fold numbers — averaging treats each fold as an
+  independent observation, pooling treats the sequence as the single dependent
+  return path it is, which is the reading `docs/strategy-validation.md` argues
+  for. Five ~100-bar folds average to a figure with no error bar; the same returns
+  pooled are ~500 observations.
+
+  **First real-data result.** MSFT / RSI-10..28, 5 folds, `next_open`, 0.1 %
+  slippage: per-fold out-of-sample Sharpe standard errors land at 1.24–1.67 on
+  99-bar windows, corroborating the ±1.8 that `strategy-validation.md` computed by
+  hand for 75-bar folds (1/√n scaling predicts 1.57). Two independently derived
+  estimates agreeing is the cross-check that matters. The **pooled** figure is
+  Sharpe +0.238, 95 % CI [−1.135, +1.519] — straddling zero on the very asset that
+  doc reports as its cleanest edge. Two of the five folds also report parameter
+  ties, so they did not really select their parameters.
+
+  **What this does not fix, and the UI says so on hover.** These are within-sample
+  intervals. They do not correct for parameter selection (Deflated Sharpe) or for
+  repeated trials across correlated assets and folds (PBO, CPCV). A narrow
+  interval here is necessary and nowhere near sufficient.
 - **Deflated Sharpe Ratio** (Bailey & López de Prado 2014) on sweep output.
   Every input is already available: the number of trials, the variance of Sharpe
   across trials, the sample length, and the winner's skew and kurtosis. Surface

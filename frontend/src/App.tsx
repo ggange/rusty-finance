@@ -185,6 +185,7 @@ export default function App() {
                 />
                 <WalkForwardResultsPanel
                   folds={walkForward.folds}
+                  oos={walkForward.oos}
                   status={walkForward.status}
                   error={walkForward.error}
                   metric={wfMetric}

@@ -18,8 +18,8 @@ import {
   SERIES,
   TOOLTIP_STYLE,
 } from "../../lib/chartTheme";
-import { formatMetric, getMetricValue } from "../../lib/metrics";
-import type { WalkForwardFold } from "../../types/api";
+import { formatInterval, formatMetric, getMetricInterval, getMetricValue } from "../../lib/metrics";
+import type { Metrics, WalkForwardFold } from "../../types/api";
 import type { WalkForwardStatus } from "../../hooks/useWalkForward";
 
 // ─── Per-fold table ──────────────────────────────────────────────────────────
@@ -85,6 +85,19 @@ function FoldTable({
                 <td className={`py-2 font-mono ${overfit ? "text-rose-400" : "text-amber-300"}`}>
                   {formatMetric(testVal, metric)}
                   {overfit && <span className="ml-1 text-xs text-rose-500" title="test significantly below train">⚠</span>}
+                  {(() => {
+                    const iv = getMetricInterval(fold.test_metrics, metric);
+                    const u = fold.test_metrics.uncertainty;
+                    if (!iv) return null;
+                    return (
+                      <span
+                        className="ml-2 text-xs font-normal text-slate-500"
+                        title={`${u?.observations ?? "?"} out-of-sample returns. A window this short cannot distinguish much — read the sign and the parameter stability, not the level.`}
+                      >
+                        {formatInterval(iv, metric, u?.confidence)}
+                      </span>
+                    );
+                  })()}
                 </td>
               </tr>
             );
@@ -136,13 +149,60 @@ function TrainTestChart({
 
 interface WalkForwardResultsPanelProps {
   folds: WalkForwardFold[];
+  oos: Metrics | null;
   status: WalkForwardStatus;
   error: string | null;
   metric: string;
 }
 
+/** Pooled out-of-sample summary: the one number that describes the procedure. */
+function PooledSummary({ oos, metric }: { oos: Metrics; metric: string }) {
+  const iv = getMetricInterval(oos, metric);
+  const u = oos.uncertainty;
+  const value = getMetricValue(oos, metric);
+  const straddlesZero = iv ? iv.lo < 0 && iv.hi > 0 : false;
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-slate-500">
+        Every fold's out-of-sample returns stitched into one series. This is
+        <em> not</em> the average of the folds above — averaging treats each fold as
+        an independent observation, while pooling treats the sequence as the single
+        return path it actually is.
+      </p>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <span className="text-xs uppercase tracking-wide text-slate-500">{metric}</span>
+        <span className="text-2xl font-semibold tabular-nums text-amber-300">
+          {formatMetric(value, metric)}
+        </span>
+        {iv && (
+          <span className="font-mono text-sm tabular-nums text-slate-400">
+            {formatInterval(iv, metric, u?.confidence)}
+          </span>
+        )}
+        {straddlesZero && (
+          <span
+            className="rounded bg-amber-950/60 px-2 py-0.5 text-xs text-amber-400"
+            title="The interval contains zero, so this result is not distinguishable from no edge at this sample size."
+          >
+            not distinguishable from zero
+          </span>
+        )}
+      </div>
+      {u && (
+        <p className="text-xs text-slate-600">
+          {u.observations} out-of-sample returns · {u.resamples} resamples · mean block{" "}
+          {u.mean_block.toFixed(1)} bars. Sampling error only: this does not correct for
+          choosing parameters by arg-max over the grid.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function WalkForwardResultsPanel({
   folds,
+  oos,
   status,
   error,
   metric,
@@ -191,6 +251,12 @@ export function WalkForwardResultsPanel({
         </p>
         <TrainTestChart folds={folds} metric={metric} />
       </Panel>
+
+      {oos && (
+        <Panel title="Pooled out-of-sample">
+          <PooledSummary oos={oos} metric={metric} />
+        </Panel>
+      )}
 
       <Panel title="Per-fold breakdown">
         <FoldTable folds={folds} metric={metric} />

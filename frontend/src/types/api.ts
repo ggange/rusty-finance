@@ -97,6 +97,38 @@ export interface Trade {
   pnl: number | null; // null on Buy
 }
 
+/** A two-sided percentile interval plus the bootstrap standard error. */
+export interface Interval {
+  lo: number;
+  hi: number;
+  std_error: number;
+}
+
+/**
+ * Bootstrap uncertainty on the metrics that are functions of the return path.
+ *
+ * Absent unless the request asked for it, and absent on the sweep grid by design.
+ * Note what it does *not* cover: selecting parameters by arg-max over a grid, or
+ * repeated trials across assets and folds.
+ */
+export interface MetricUncertainty {
+  method: string;
+  confidence: number;
+  resamples: number;
+  mean_block: number;
+  seed: number;
+  observations: number;
+  sharpe_ratio: Interval;
+  sortino_ratio: Interval;
+  cagr: Interval;
+  /**
+   * Spread only, no endpoints. Block resampling destroys the multi-month trends
+   * that produce deep drawdowns, so percentile endpoints here would be biased
+   * toward optimism and mislead about direction.
+   */
+  max_drawdown_std_error: number;
+}
+
 export interface Metrics {
   total_return: number;
   cagr: number;
@@ -106,6 +138,7 @@ export interface Metrics {
   sortino_ratio: number;
   win_rate: number | null;
   trade_count: number;
+  uncertainty?: MetricUncertainty | null;
 }
 
 export interface Benchmark {
@@ -353,6 +386,14 @@ export interface WalkForwardFold {
 
 export interface WalkForwardResponse {
   folds: WalkForwardFold[];
+  /**
+   * Metrics for every fold's out-of-sample returns stitched into one series.
+   *
+   * The honest headline for a walk-forward run, and not the average of the
+   * per-fold numbers: averaging treats each fold as an independent observation,
+   * pooling treats the sequence as the single dependent return path it is.
+   */
+  oos_metrics?: Metrics | null;
 }
 
 // ─── /trade/* — the live trading loop ───────────────────────────────────────
