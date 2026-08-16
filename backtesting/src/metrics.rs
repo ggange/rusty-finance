@@ -1,4 +1,5 @@
 use serde::Serialize;
+use crate::bootstrap::{bootstrap_curve, BootstrapConfig, MetricUncertainty};
 use crate::portfolio::{EquityPoint, TradeRecord};
 use crate::stats::TRADING_DAYS;
 
@@ -54,6 +55,18 @@ pub struct Metrics {
     pub win_rate: Option<f64>,
     /// Total number of executed trades (buys + sells).
     pub trade_count: usize,
+    /// Bootstrap uncertainty around the path metrics, when a caller asked for it.
+    ///
+    /// `None` on the sweep path, and it must stay that way: an interval per grid
+    /// cell would cost cells × resamples, and a grid of independent intervals
+    /// invites reading a selected maximum as if the selection were free — which
+    /// is the error the Deflated Sharpe Ratio exists to correct, not something an
+    /// interval can fix.
+    ///
+    /// Skipped entirely when absent, so responses that do not request it are
+    /// byte-identical to those produced before this field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncertainty: Option<MetricUncertainty>,
 }
 
 impl Metrics {
@@ -62,7 +75,7 @@ impl Metrics {
         let zero = Self {
             total_return: 0.0, cagr: 0.0, annualized_volatility: 0.0,
             max_drawdown: 0.0, sharpe_ratio: 0.0, sortino_ratio: 0.0,
-            win_rate: None, trade_count: trades.len(),
+            win_rate: None, trade_count: trades.len(), uncertainty: None,
         };
         if curve.len() < 2 { return zero; }
 
@@ -116,7 +129,24 @@ impl Metrics {
         Self {
             total_return, cagr, annualized_volatility, max_drawdown,
             sharpe_ratio, sortino_ratio, win_rate, trade_count: trades.len(),
+            // Populated only by `with_uncertainty`, never here: `compute` runs
+            // once per sweep grid cell and must stay cheap.
+            uncertainty: None,
         }
+    }
+
+    /// Attach bootstrap intervals, computed from the same curve the metrics came
+    /// from.
+    ///
+    /// Returns `self` untouched when the config is disabled or the series is too
+    /// short to resample. An interval is an enrichment, never a reason for a
+    /// backtest to fail — a 6-bar fold should still report its metrics.
+    pub fn with_uncertainty(mut self, curve: &[EquityPoint], cfg: &BootstrapConfig) -> Self {
+        if !cfg.enabled {
+            return self;
+        }
+        self.uncertainty = bootstrap_curve(curve, cfg).ok();
+        self
     }
 }
 
@@ -176,6 +206,87 @@ mod tests {
         ];
         let m = Metrics::compute(&curve, &trades);
         assert!((m.win_rate.unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn metrics_are_invariant_to_the_curve_dates() {
+        // `bootstrap::bootstrap_returns` synthesises dates for a bare return
+        // series, which is only sound because nothing here reads them. The `cagr`
+        // rustdoc contemplates deriving the annualisation from the date span one
+        // day; if that happens, this test fails and names why rather than letting
+        // the pooled out-of-sample interval quietly go wrong.
+        let navs = [10_000.0, 10_500.0, 10_200.0, 11_000.0];
+        let near: Vec<EquityPoint> = navs
+            .iter()
+            .enumerate()
+            .map(|(i, &nav)| ep_seq(i, nav))
+            .collect();
+        // Same NAVs, dates a decade later and a week apart.
+        let far: Vec<EquityPoint> = navs
+            .iter()
+            .enumerate()
+            .map(|(i, &nav)| EquityPoint {
+                date: NaiveDate::from_ymd_opt(2034, 6, 1).unwrap() + Duration::weeks(i as i64),
+                nav,
+            })
+            .collect();
+
+        let a = Metrics::compute(&near, &[]);
+        let b = Metrics::compute(&far, &[]);
+        assert_eq!(a.cagr, b.cagr, "cagr must not depend on the dates");
+        assert_eq!(a.sharpe_ratio, b.sharpe_ratio);
+        assert_eq!(a.max_drawdown, b.max_drawdown);
+    }
+
+    #[test]
+    fn absent_uncertainty_serialises_to_the_pre_existing_json() {
+        // The backward-compatibility contract. `api/main.py` has no response
+        // models and returns the parsed blob verbatim, and every run is persisted
+        // to the `runs` table, so a field appearing unbidden would change stored
+        // history and the sweep payload alike.
+        let curve = vec![ep(1, 10_000.0), ep(2, 10_500.0), ep(3, 10_200.0)];
+        let json = serde_json::to_string(&Metrics::compute(&curve, &[])).unwrap();
+        assert!(
+            !json.contains("uncertainty"),
+            "metrics without an interval must not mention it: {json}"
+        );
+    }
+
+    #[test]
+    fn with_uncertainty_attaches_an_interval_and_leaves_the_estimates_alone() {
+        let curve: Vec<EquityPoint> = (0..60)
+            .map(|i| ep_seq(i, 10_000.0 * (1.0 + 0.01 * ((i % 7) as f64 - 3.0))))
+            .collect();
+        let bare = Metrics::compute(&curve, &[]);
+        let enriched = bare.clone().with_uncertainty(&curve, &BootstrapConfig::default());
+
+        assert!(enriched.uncertainty.is_some());
+        // Every point estimate must survive untouched — the interval is around
+        // the reported number, not a replacement for it.
+        assert_eq!(bare.total_return, enriched.total_return);
+        assert_eq!(bare.cagr, enriched.cagr);
+        assert_eq!(bare.sharpe_ratio, enriched.sharpe_ratio);
+        assert_eq!(bare.sortino_ratio, enriched.sortino_ratio);
+        assert_eq!(bare.max_drawdown, enriched.max_drawdown);
+        assert_eq!(bare.annualized_volatility, enriched.annualized_volatility);
+        assert_eq!(bare.trade_count, enriched.trade_count);
+    }
+
+    #[test]
+    fn a_disabled_config_leaves_the_metrics_without_an_interval() {
+        let curve: Vec<EquityPoint> = (0..60).map(|i| ep_seq(i, 10_000.0 + i as f64)).collect();
+        let m = Metrics::compute(&curve, &[]).with_uncertainty(&curve, &BootstrapConfig::off());
+        assert!(m.uncertainty.is_none());
+    }
+
+    #[test]
+    fn a_curve_too_short_to_bootstrap_still_reports_its_metrics() {
+        // An interval is an enrichment, not a precondition: a 4-bar fold must
+        // still come back with a Sharpe rather than erroring out.
+        let curve = vec![ep(1, 10_000.0), ep(2, 10_100.0), ep(3, 10_050.0)];
+        let m = Metrics::compute(&curve, &[]).with_uncertainty(&curve, &BootstrapConfig::default());
+        assert!(m.uncertainty.is_none());
+        assert!(m.total_return != 0.0);
     }
 
     #[test]
