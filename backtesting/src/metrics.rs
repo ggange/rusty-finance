@@ -1,5 +1,6 @@
 use serde::Serialize;
 use crate::portfolio::{EquityPoint, TradeRecord};
+use crate::stats::TRADING_DAYS;
 
 /// Buy-and-hold benchmark: total return and CAGR for holding `initial_cash`
 /// worth of the asset from `first_price` to `last_price` over `n_bars` trading days.
@@ -21,7 +22,7 @@ impl Benchmark {
         // `n_bars` observations span `n_bars - 1` return periods. Must match
         // `Metrics::compute`, since the two CAGRs are displayed side by side as
         // strategy vs buy-and-hold.
-        let cagr = (end_nav / initial_cash).powf(252.0 / (n_bars - 1) as f64) - 1.0;
+        let cagr = (end_nav / initial_cash).powf(TRADING_DAYS / (n_bars - 1) as f64) - 1.0;
         Self { total_return, cagr }
     }
 }
@@ -73,7 +74,7 @@ impl Metrics {
         // difference is negligible over years and material over a walk-forward
         // fold, where `Metrics::cagr` can also be the ranking metric.
         let periods = (n - 1) as f64;
-        let cagr = (last_nav / first_nav).powf(252.0 / periods) - 1.0;
+        let cagr = (last_nav / first_nav).powf(TRADING_DAYS / periods) - 1.0;
 
         // Max drawdown
         let mut peak = first_nav;
@@ -93,15 +94,15 @@ impl Metrics {
         let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / nr;
         let std_dev = variance.sqrt();
 
-        let annualized_volatility = std_dev * 252_f64.sqrt();
-        let sharpe_ratio = if std_dev == 0.0 { 0.0 } else { mean / std_dev * 252_f64.sqrt() };
+        let annualized_volatility = std_dev * TRADING_DAYS.sqrt();
+        let sharpe_ratio = if std_dev == 0.0 { 0.0 } else { mean / std_dev * TRADING_DAYS.sqrt() };
 
         // Sortino: downside deviation (returns below 0)
         let downside_var = returns.iter()
             .map(|&r| if r < 0.0 { r * r } else { 0.0 })
             .sum::<f64>() / nr;
         let downside_dev = downside_var.sqrt();
-        let sortino_ratio = if downside_dev == 0.0 { 0.0 } else { mean / downside_dev * 252_f64.sqrt() };
+        let sortino_ratio = if downside_dev == 0.0 { 0.0 } else { mean / downside_dev * TRADING_DAYS.sqrt() };
 
         // Win rate: profitable sell trades / total sell trades
         let sells: Vec<_> = trades.iter().filter_map(|t| t.pnl).collect();

@@ -27,8 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Trading days per year, matching [`crate::metrics`] and [`crate::risk`].
-const TRADING_DAYS: f64 = 252.0;
+use crate::stats::TRADING_DAYS;
 
 /// What the optimizer is solving for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

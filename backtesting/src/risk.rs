@@ -2,9 +2,9 @@ use chrono::NaiveDate;
 use serde::Serialize;
 
 use crate::portfolio::EquityPoint;
+use crate::stats::{sort_ascending, tail_index, TRADING_DAYS};
 
 const ROLLING_WINDOW: usize = 21;
-const TRADING_DAYS: f64 = 252.0;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct RollingPoint {
@@ -208,20 +208,6 @@ impl RiskMetrics {
     }
 }
 
-/// Index of the historical `q`-quantile in an ascending series of `n` returns,
-/// using the lower estimator `ceil(q·n) − 1`: the tail is the worst `ceil(q·n)`
-/// observations, and VaR is the mildest loss in it.
-///
-/// Using `floor(q·n)` instead selects one order statistic too far into the body
-/// of the distribution, which always understates the tail loss and can invert
-/// the sign outright — with exactly 5 losing days in 100, `floor` lands on the
-/// first *winning* day and reports a positive VaR-95.
-fn tail_index(q: f64, n: usize) -> usize {
-    debug_assert!(n > 0, "tail_index requires a non-empty series");
-    let k = (q * n as f64).ceil().max(1.0) as usize;
-    k.min(n) - 1
-}
-
 /// Historical VaR and CVaR at 95% and 99% confidence.
 /// Returns (var_95, cvar_95, var_99, cvar_99).
 /// Both VaR and CVaR are negative for loss-making tail days.
@@ -239,7 +225,7 @@ fn quantile_risk(returns: &[f64]) -> (f64, f64, f64, f64) {
         return (0.0, 0.0, 0.0, 0.0);
     }
     let mut sorted = returns.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sort_ascending(&mut sorted);
     let n = sorted.len();
 
     let tail = |q: f64| {
