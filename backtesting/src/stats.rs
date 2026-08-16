@@ -40,9 +40,21 @@ pub(crate) fn sort_ascending(values: &mut [f64]) {
 ///
 /// Used for both historical VaR/CVaR ([`crate::risk`]) and bootstrap percentile
 /// endpoints ([`crate::bootstrap`]), so the two agree on what a 5 % tail means.
+///
+/// `q · n` is snapped to a whole number when it lands within float dust of one,
+/// because `q` is often *computed* rather than literal and binary floating point
+/// does not represent decimal tail probabilities exactly. `(1.0 − 0.95) / 2.0`
+/// is `0.025000000000000022`, so a bare `ceil` of `q · 1000` gives 26 rather than
+/// 25 and silently takes one extra observation into the tail.
 pub(crate) fn tail_index(q: f64, n: usize) -> usize {
     debug_assert!(n > 0, "tail_index requires a non-empty series");
-    let k = (q * n as f64).ceil().max(1.0) as usize;
+    let exact = q * n as f64;
+    let whole = if (exact - exact.round()).abs() < 1e-9 {
+        exact.round()
+    } else {
+        exact.ceil()
+    };
+    let k = whole.max(1.0) as usize;
     k.min(n) - 1
 }
 
@@ -68,6 +80,16 @@ mod tests {
     fn the_tail_index_never_runs_off_the_end() {
         assert_eq!(tail_index(1.0, 10), 9);
         assert_eq!(tail_index(2.0, 10), 9);
+    }
+
+    #[test]
+    fn a_computed_tail_probability_is_not_widened_by_float_dust() {
+        // (1.0 - 0.95) / 2.0 is 0.025000000000000022, not 0.025. Without the
+        // snap, ceil(q·1000) is 26 and the tail quietly gains an observation.
+        let q = (1.0 - 0.95) / 2.0;
+        assert_eq!(tail_index(q, 1000), 24);
+        // And the honest non-integer case still rounds up, as VaR needs.
+        assert_eq!(tail_index(0.026, 1000), 25);
     }
 
     #[test]
