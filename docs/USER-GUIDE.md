@@ -288,14 +288,28 @@ and do the selected parameters stay in the same neighbourhood? Parameters that
 jump from 5 to 40 to 12 across folds are fitting noise, and the strategy has no
 stable operating point regardless of how the test numbers look.
 
+**Don't read the magnitude at all.** A Sharpe computed from a ~75-bar test fold
+has a standard error of roughly ±1.8 once annualised, so a fold reporting 1.5 and
+a fold reporting 0.2 are not meaningfully different, and a test Sharpe *above*
+train tells you the folds are too short to compare rather than that the strategy
+is robust. Sign consistency and parameter stability are the signals here. The
+level is noise wearing a decimal point.
+
 `docs/strategy-validation.md` has this already run across all six strategies —
 RSI and Bollinger survived, MACD and EMA crossover were eliminated. Read it
-before spending a week rediscovering it.
+before spending a week rediscovering it, and read its caveat block before quoting
+any number from it.
 
-**Current gap worth knowing:** walk-forward validates strategy *parameters*, not
-weighting *objectives*. You can ask "which RSI period holds up out-of-sample";
-you can't yet ask "which weighting objective does." Given the max-Sharpe result
-in §6, that's the most valuable thing left to build.
+**Current gaps worth knowing:**
+
+- **No error bars anywhere yet.** Nothing in the UI reports a confidence interval,
+  and the sweep's "best combo" callout is an uncorrected arg-max over the grid.
+  Fixing that is the active roadmap item (Horizon 5A); until it lands, apply the
+  ±1.8 rule of thumb above by hand.
+- **Walk-forward validates strategy *parameters*, not weighting *objectives*.**
+  You can ask "which RSI period holds up out-of-sample"; you can't yet ask "which
+  weighting objective does." Given the max-Sharpe result in §6, that remains a
+  real gap.
 
 ---
 
@@ -392,7 +406,8 @@ make dev
    Look at the surface. Is there a plateau, or a spike?
 2. **Walk-forward** (Walk-forward tab): same grid, 5 windows, train 0.7,
    metric `sharpe_ratio`. Are test Sharpes positive in most folds? Do the
-   selected periods cluster?
+   selected periods cluster? Ignore how *large* the test Sharpes are — at this
+   fold length the magnitudes carry no information.
 3. **If it survives**, back to the Portfolio backtest tab: AAPL + MSFT + NVDA,
    RSI at the period the folds agreed on, commission 1.0, slippage 0.001,
    fill timing `next_open`, benchmark `SPY.csv`.

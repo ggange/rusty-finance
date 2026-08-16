@@ -11,7 +11,7 @@ strategies through a simulated trading loop with risk limits and a kill switch.
 
 ![Walk-forward validation of RSI on MSFT — five rolling folds comparing in-sample and out-of-sample Sharpe, with each fold's train and test window, selected parameters, and resulting scores](docs/images/walkforward.png)
 
-<sub>Walk-forward validation of RSI on MSFT: five rolling folds, parameters re-optimised on each training window, scored on data the optimiser never saw. Out-of-sample Sharpe exceeds in-sample in four of five folds.</sub>
+<sub>Walk-forward validation of RSI on MSFT: five rolling folds, parameters re-optimised on each training window, scored on data the optimiser never saw. Note what the numbers <em>don't</em> establish — a Sharpe from a ~75-bar fold carries a standard error near ±1.8, so per-fold figures are barely distinguishable from noise and test-above-train says more about sample size than about edge. Quantifying that is the platform's next piece of work; see <a href="docs/strategy-validation.md">strategy-validation.md</a>.</sub>
 
 ## Why this repo might interest you
 
@@ -19,6 +19,13 @@ strategies through a simulated trading loop with risk limits and a kill switch.
   runs 5-fold walk-forward validation across five assets and **cuts MACD and EMA
   crossover for negative out-of-sample Sharpe**. Only RSI and Bollinger Bands are
   cleared to trade. Nothing here is promoted on in-sample results.
+- **The reported results state their own limits.** That validation doc opens by
+  quantifying its own error bars and concluding that its headline Sharpes are
+  *not* statistically distinguishable from zero at this sample size — the
+  strategy *ranking* is informative, the magnitudes are not. Confidence
+  intervals, Deflated Sharpe and probability-of-backtest-overfitting are the
+  active roadmap item; until they ship, the doc says so rather than implying
+  otherwise.
 - **Compute in Rust, orchestration in Python.** The engine, metrics, optimiser
   and walk-forward loop are Rust; PyO3 exposes them to a FastAPI layer, so the
   hot path stays fast without giving up the Python ecosystem.
