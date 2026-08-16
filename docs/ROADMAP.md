@@ -360,14 +360,36 @@ currently overstates what it knows. Each item is a metric with a paper behind it
     Covariance-consuming objectives now solve over the observed assets only;
     `EqualWeight` is exempt because it never reads the matrix.
 
-  Not yet fixed, found in the same review and carried forward: walk-forward ties
-  resolving silently to grid index 0, test slices cold-starting their indicators
-  instead of warm-starting from the train slice, `/portfolio/optimize` computing
-  covariance across calendar-misaligned series, and RSI returning 100/Sell on a
-  flat window. The first two matter for item A's rewrite of
-  `strategy-validation.md` — a 20-period band on a 75-bar test fold burns a
-  quarter of the window to warm-up, which is a more likely explanation of
-  Bollinger's "no-signal folds" than selectivity.
+- ✅ **Walk-forward warm start and tie reporting (2026-08-16).** The two defects
+  from the same review that bore directly on this item's rewrite of
+  `strategy-validation.md`:
+  - **Test slices cold-started their indicators.** The winning combo was re-run
+    on the test slice from scratch, so every test window paid a second warm-up
+    and lost its first `period` bars — and when the test slice was shorter than
+    the indicator's period, it could not trade *at all* and reported an all-zero
+    metric set as an out-of-sample score, indistinguishable from a strategy that
+    legitimately found nothing to do. The chosen combo now runs across the whole
+    fold and is scored from the first test bar onward, so its state is what a
+    live deployment would hold on that date. No look-ahead: every bar it has seen
+    precedes the scored window. A direct A/B test pins the difference — the same
+    spec on the same 15 bars trades 0 times cold and >0 times warm-started.
+
+    **This changes the reading of the existing validation results.** A 20-period
+    Bollinger band on a 75-bar test fold was burning a quarter of the window to
+    warm-up, which is a more plausible explanation of that strategy's many
+    "no-signal folds" than the selectivity the doc currently claims.
+  - **Ties resolved silently to grid index 0.** Selection was strict `>` from
+    `NEG_INFINITY`, so equal scores kept the first combo — and ties are the
+    common case, because every strategy that never fires scores exactly 0.0.
+    Folds now report `tied_candidates`, surfaced in the walk-forward table as an
+    "N-way tie" badge, so a fold that did not really select its parameters says
+    so. At an exact tie a combo that traded now beats one that did not; beyond
+    that the tie-break is still arbitrary, which is the reason for reporting the
+    count rather than hiding it.
+
+  Not yet fixed, carried forward: `/portfolio/optimize` computing covariance
+  across calendar-misaligned series, and RSI returning 100/Sell on a flat window
+  (plus its "Wilder smoothing" not being Wilder's). Neither blocks item A.
 
 - **Confidence intervals on every performance metric.** Stationary bootstrap
   (Politis & Romano 1994) over the return series, so autocorrelation and

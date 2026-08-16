@@ -342,6 +342,10 @@ export interface WalkForwardFold {
   best_params: Record<string, number>;
   train_metrics: Metrics;
   test_metrics: Metrics;
+  /** How many grid combos matched the winning train score. 1 = a clean win;
+   *  higher means the metric could not discriminate and `best_params` was not
+   *  really chosen; 0 means nothing was selectable. */
+  tied_candidates: number;
 }
 
 export interface WalkForwardResponse {

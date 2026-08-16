@@ -62,6 +62,22 @@ function FoldTable({
                   {Object.entries(fold.best_params)
                     .map(([k, v]) => `${k}=${v}`)
                     .join(", ")}
+                  {fold.tied_candidates > 1 && (
+                    <span
+                      className="ml-1 text-xs text-amber-500"
+                      title={`${fold.tied_candidates} parameter sets tied on the train metric — these were not really selected, and comparing them across folds is reading noise`}
+                    >
+                      ({fold.tied_candidates}-way tie)
+                    </span>
+                  )}
+                  {fold.tied_candidates === 0 && (
+                    <span
+                      className="ml-1 text-xs text-rose-500"
+                      title="every combo scored NaN on the train slice; nothing was selectable"
+                    >
+                      (no valid candidate)
+                    </span>
+                  )}
                 </td>
                 <td className="py-2 pr-4 font-mono text-sky-300">
                   {formatMetric(trainVal, metric)}

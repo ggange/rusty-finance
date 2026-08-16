@@ -1,6 +1,18 @@
 //! Walk-forward validation: for each rolling fold, train on the first
 //! `train_frac` of the fold and test on the remainder. The best parameter
-//! combination (by `metric`) from the train slice is then run on the test slice.
+//! combination (by `metric`) from the train slice is then scored on the test
+//! slice.
+//!
+//! Two properties this module exists to protect:
+//!
+//! - **Selection never sees the test slice.** The grid is scored on `train`
+//!   only. Where the metric cannot tell combos apart, the fold reports
+//!   `tied_candidates` rather than pretending a choice was made.
+//! - **The test slice is warm-started, not restarted.** The chosen strategy runs
+//!   across the whole fold and is scored from the first test bar onward, so its
+//!   indicators are primed exactly as a live deployment's would be on that date.
+//!   Every bar it has seen still precedes the scored window, so there is no
+//!   look-ahead.
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -10,7 +22,7 @@ use std::collections::HashMap;
 use crate::data::Candle;
 use crate::engine::{BacktestEngine, FillTiming};
 use crate::metrics::Metrics;
-use crate::portfolio::{ExecutionCosts, Portfolio};
+use crate::portfolio::{EquityPoint, ExecutionCosts, Portfolio, TradeRecord};
 use crate::strategy::ma::{MAType, MovingAverageCrossover};
 use crate::strategy::macd::MACD;
 use crate::strategy::rsi::RSI;
@@ -34,8 +46,19 @@ pub struct WalkForwardFold {
     pub best_params: HashMap<String, Value>,
     /// Metrics from the best combo run on the train slice.
     pub train_metrics: Metrics,
-    /// Metrics from the same combo run on the test slice.
+    /// Metrics from the same combo run on the test slice, warm-started from the
+    /// train slice.
     pub test_metrics: Metrics,
+    /// How many grid combos matched the winning train score.
+    ///
+    /// `1` is a clean win. Anything higher means the metric could not
+    /// discriminate between that many parameter sets and the tie was broken by
+    /// a secondary rule — so `best_params` was not really *chosen*, and a
+    /// per-fold parameter comparison across folds is reading noise. `0` means
+    /// nothing was selectable (every combo scored NaN). Ties are common,
+    /// because any strategy that never fires on the train slice scores exactly
+    /// 0.0, and they used to resolve silently to the first combo in the grid.
+    pub tied_candidates: usize,
 }
 
 /// Output of a full walk-forward run.
@@ -49,8 +72,13 @@ pub struct WalkForwardResult {
 /// Splits `candles` into `n_windows` rolling folds of equal length. Each fold
 /// uses the first `train_frac` of its bars as the train slice and the rest as
 /// the test slice. For each fold the full `strategy_grid` is evaluated on the
-/// train slice; the combo with the best `metric` score is re-run on the test
-/// slice and both metric sets are returned.
+/// train slice; the combo with the best `metric` score is then scored on the
+/// test slice, warm-started from the train slice, and both metric sets are
+/// returned along with `tied_candidates`.
+///
+/// The train slice must be long enough to warm up the widest indicator in the
+/// grid, or every combo scores 0.0 and the selection is a tie. The *test* slice
+/// has no such requirement, because it inherits warm indicator state.
 ///
 /// # Errors
 /// Returns a descriptive `String` on invalid inputs (too few candles, invalid
@@ -100,24 +128,25 @@ pub fn run_walk_forward(
             return Err(format!("fold {wi}: test slice is empty; reduce train_frac or n_windows"));
         }
 
-        // Run the entire grid on the train slice.
-        let mut best_idx = 0usize;
-        let mut best_score = f64::NEG_INFINITY;
+        // Run the entire grid on the train slice. Selection reads `train` only —
+        // this is the in-sample score, and the test slice must stay unseen.
+        let mut candidates: Vec<(f64, usize)> = Vec::with_capacity(strategy_grid.len());
         let mut train_metrics_vec: Vec<Metrics> = Vec::with_capacity(strategy_grid.len());
 
-        for (gi, spec_val) in strategy_grid.iter().enumerate() {
+        for spec_val in strategy_grid.iter() {
             let m = run_one(spec_val, train, initial_cash, &costs, fill_timing)?;
-            let score = metric_score(&m, metric);
-            if score > best_score {
-                best_score = score;
-                best_idx = gi;
-            }
+            candidates.push((metric_score(&m, metric), m.trade_count));
             train_metrics_vec.push(m);
         }
 
-        // Re-run the best combo on the test slice.
+        let (best_idx, tied_candidates) = select_best(&candidates);
+
+        // Score the best combo on the test slice, warm-started from the train
+        // slice so the indicators are primed the way a live deployment's would be.
         let best_spec = &strategy_grid[best_idx];
-        let test_metrics = run_one(best_spec, test, initial_cash, &costs, fill_timing)?;
+        let test_metrics = run_test_warm_started(
+            best_spec, fold, train_len, initial_cash, &costs, fill_timing,
+        )?;
         let train_metrics = train_metrics_vec.remove(best_idx);
 
         // Extract best_params (all fields except "type").
@@ -144,10 +173,101 @@ pub fn run_walk_forward(
             best_params,
             train_metrics,
             test_metrics,
+            tied_candidates,
         });
     }
 
     Ok(WalkForwardResult { folds })
+}
+
+/// Pick the winning grid index from `(score, trade_count)` pairs.
+///
+/// Returns `(best_index, tied_candidates)`, where `tied_candidates` counts how
+/// many combos matched the winning score — `1` for a clean win, `0` when nothing
+/// was selectable because every score was NaN.
+///
+/// Two rules beyond "highest score wins":
+///
+/// - **NaN never wins.** A combo whose metric came back NaN is not a candidate.
+/// - **At an exact tie, a combo that traded beats one that did not.** A 0.0
+///   Sharpe from a strategy that never fired carries no evidence; a 0.0 from one
+///   that round-tripped to breakeven does.
+///
+/// Ties still have to resolve to *something*, and beyond the trade-count rule
+/// that something is the lowest grid index — which is arbitrary. That is
+/// precisely why the count is returned and surfaced on the fold rather than
+/// discarded: a fold reporting `tied_candidates > 1` did not really select its
+/// parameters, and comparing `best_params` across such folds is reading noise.
+fn select_best(candidates: &[(f64, usize)]) -> (usize, usize) {
+    let mut best: Option<(usize, f64, usize)> = None;
+    for (i, &(score, trades)) in candidates.iter().enumerate() {
+        if score.is_nan() {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            // Strictly higher score, or an equal score from a combo that
+            // actually traded where the incumbent did not.
+            Some((_, bs, bt)) => score > bs || (score == bs && trades > 0 && bt == 0),
+        };
+        if better {
+            best = Some((i, score, trades));
+        }
+    }
+    match best {
+        None => (0, 0),
+        Some((idx, score, _)) => {
+            let tied = candidates.iter().filter(|&&(s, _)| s == score).count();
+            (idx, tied)
+        }
+    }
+}
+
+/// Run `spec` over the whole fold but score only the test slice.
+///
+/// The strategy sees `train` before `test`, so its indicators are already warm
+/// when the test window opens — the same state a live deployment would have on
+/// that date, and no look-ahead, because every bar it has seen precedes the test
+/// window. Cold-starting the strategy on `test` instead makes it pay a second
+/// warm-up: the scored window is silently truncated by the indicator's period,
+/// and when the test slice is shorter than that period the result is guaranteed
+/// zero trades and an all-zero metric set presented as an out-of-sample score.
+///
+/// Only bars from `train_len` onward are scored. [`Metrics`] normalises by the
+/// first NAV of the curve it is handed, so slicing rebases the test window
+/// automatically.
+///
+/// One asymmetry worth knowing: a position opened late in `train` carries into
+/// the test window, so the test slice is not always entered flat the way the
+/// train slice is. That is realistic — it is what a live system would hold on
+/// that date — but it means a test fold can book the exit of a trade whose entry
+/// was decided on train data.
+fn run_test_warm_started(
+    spec_val: &Value,
+    fold: &[Candle],
+    train_len: usize,
+    initial_cash: f64,
+    costs: &ExecutionCosts,
+    fill_timing: FillTiming,
+) -> Result<Metrics, String> {
+    let strategy = build_strategy_from_value(spec_val)?;
+    let portfolio = Portfolio::new(initial_cash, "WF".to_string()).with_costs(costs.clone());
+    let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(fill_timing);
+    engine.run(fold);
+    let result = engine.result();
+
+    let test_start = fold[train_len].date;
+    let curve: Vec<EquityPoint> = result
+        .equity_curve
+        .into_iter()
+        .filter(|p| p.date >= test_start)
+        .collect();
+    let trades: Vec<TradeRecord> = result
+        .trades
+        .into_iter()
+        .filter(|t| t.date >= test_start)
+        .collect();
+    Ok(Metrics::compute(&curve, &trades))
 }
 
 /// Run one strategy spec on a candle slice and return its metrics.
@@ -276,6 +396,179 @@ mod tests {
                 {"type": "ma_ema", "short_window": 5, "long_window": 10}
             ]"#
         ).unwrap()
+    }
+
+    /// Oscillating prices, so a short/long MA pair crosses repeatedly.
+    fn oscillating_candles(n: usize) -> Vec<Candle> {
+        (0..n)
+            .map(|i| make_candle(i, 100.0 + 10.0 * (i as f64 / 2.5).sin()))
+            .collect()
+    }
+
+    // ─── Selection ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_clean_win_reports_one_candidate() {
+        let (idx, tied) = select_best(&[(0.5, 3), (1.2, 4), (0.9, 2)]);
+        assert_eq!(idx, 1);
+        assert_eq!(tied, 1);
+    }
+
+    #[test]
+    fn ties_are_counted_not_hidden() {
+        // Three combos that all scored 0.0 because none of them ever fired.
+        // "Best params" is meaningless here and the caller has to be able to see
+        // that, rather than being handed grid index 0 as though it had won.
+        let (idx, tied) = select_best(&[(0.0, 0), (0.0, 0), (0.0, 0)]);
+        assert_eq!(idx, 0);
+        assert_eq!(tied, 3);
+    }
+
+    #[test]
+    fn a_tie_prefers_the_combo_that_actually_traded() {
+        // Grid order must not decide this: a 0.0 from a strategy that never
+        // fired is weaker evidence than a 0.0 from one that round-tripped.
+        let (idx, tied) = select_best(&[(0.0, 0), (0.0, 6)]);
+        assert_eq!(idx, 1);
+        // Still reported as a tie — the *metric* could not discriminate.
+        assert_eq!(tied, 2);
+    }
+
+    #[test]
+    fn nan_scores_are_never_selected() {
+        let (idx, _) = select_best(&[(f64::NAN, 5), (0.3, 2)]);
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn nothing_selectable_reports_zero_candidates() {
+        let (idx, tied) = select_best(&[(f64::NAN, 0), (f64::NAN, 0)]);
+        assert_eq!(idx, 0);
+        assert_eq!(tied, 0);
+    }
+
+    #[test]
+    fn a_grid_that_never_fires_reports_the_tie_on_the_fold() {
+        // Every combo needs more bars than the train slice has, so all score
+        // 0.0. The fold must admit that rather than presenting the first combo
+        // as a validated winner.
+        let candles = oscillating_candles(100);
+        let grid: Vec<Value> = serde_json::from_str(
+            r#"[
+                {"type": "ma_sma", "short_window": 2, "long_window": 40},
+                {"type": "ma_sma", "short_window": 3, "long_window": 45}
+            ]"#,
+        )
+        .unwrap();
+        let result = run_walk_forward(
+            &candles, &grid, 2, 0.7, "sharpe_ratio",
+            10_000.0, ExecutionCosts::default(), FillTiming::Close,
+        )
+        .expect("should succeed");
+
+        let fold = &result.folds[0];
+        assert_eq!(fold.train_metrics.trade_count, 0, "train slice should be too short to trade");
+        assert_eq!(fold.tied_candidates, 2, "both combos scored 0.0 and the tie must be reported");
+    }
+
+    // ─── Warm start ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_test_slice_inherits_indicator_state_from_train() {
+        // fold_len 50 → train 35, test 15. A 20-bar SMA cannot form inside a
+        // 15-bar slice, so cold-starting the strategy on the test window
+        // guarantees zero trades regardless of what prices do. Warm-started from
+        // the 35 train bars it is already primed and trades immediately.
+        let candles = oscillating_candles(100);
+        let grid: Vec<Value> = serde_json::from_str(
+            r#"[{"type": "ma_sma", "short_window": 2, "long_window": 20}]"#,
+        )
+        .unwrap();
+        let result = run_walk_forward(
+            &candles, &grid, 2, 0.7, "total_return",
+            10_000.0, ExecutionCosts::default(), FillTiming::Close,
+        )
+        .expect("should succeed");
+
+        for fold in &result.folds {
+            assert!(
+                fold.test_metrics.trade_count > 0,
+                "fold {} scored no trades out of sample — cold start",
+                fold.window_index
+            );
+        }
+    }
+
+    #[test]
+    fn a_cold_run_shorter_than_the_indicator_cannot_trade() {
+        // The whole reason `run_test_warm_started` exists, as a direct A/B on the
+        // same spec and the same bars: 15 bars cannot form a 20-bar SMA, so a
+        // cold run scores zero trades whatever the prices do. That is what test
+        // slices used to be scored on, and it is indistinguishable in the output
+        // from a strategy that legitimately found nothing to do.
+        let candles = oscillating_candles(100);
+        let spec: Value = serde_json::from_str(
+            r#"{"type": "ma_sma", "short_window": 2, "long_window": 20}"#,
+        )
+        .unwrap();
+        let costs = ExecutionCosts::default();
+
+        let cold = run_one(&spec, &candles[35..50], 10_000.0, &costs, FillTiming::Close)
+            .expect("cold run should succeed");
+        assert_eq!(cold.trade_count, 0, "a cold 15-bar slice cannot trade a 20-bar SMA");
+
+        let warm = run_test_warm_started(&spec, &candles[0..50], 35, 10_000.0, &costs, FillTiming::Close)
+            .expect("warm run should succeed");
+        assert!(
+            warm.trade_count > 0,
+            "warm-started run should trade the same slice, got {}",
+            warm.trade_count
+        );
+    }
+
+    #[test]
+    fn test_metrics_are_rebased_to_the_test_window() {
+        // Prices climb through the train slice, then go flat for the whole test
+        // slice. Warm-starting runs the engine across the entire fold, so the
+        // test metrics must still be measured from the first test bar: a flat
+        // test window is a 0 % return even though the fold as a whole gained.
+        // Zero-cost execution, so trades inside the flat stretch cannot move NAV.
+        // Rising *and* oscillating through the train slice, so the MA pair
+        // actually crosses and trades — a monotonic ramp never crosses at all.
+        let wave = |i: f64| 100.0 + 0.8 * i + 8.0 * (i / 2.5).sin();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| {
+                let price = if i < 35 {
+                    wave(i as f64)
+                } else if i < 50 {
+                    wave(34.0) // flat for the whole test slice
+                } else {
+                    wave(i as f64 - 15.0)
+                };
+                make_candle(i, price)
+            })
+            .collect();
+        let grid: Vec<Value> = serde_json::from_str(
+            r#"[{"type": "ma_sma", "short_window": 2, "long_window": 10}]"#,
+        )
+        .unwrap();
+        let result = run_walk_forward(
+            &candles, &grid, 2, 0.7, "total_return",
+            10_000.0, ExecutionCosts::default(), FillTiming::Close,
+        )
+        .expect("should succeed");
+
+        let fold = &result.folds[0];
+        assert!(
+            fold.train_metrics.total_return > 0.0,
+            "train slice should have gained, got {}",
+            fold.train_metrics.total_return
+        );
+        assert!(
+            fold.test_metrics.total_return.abs() < 1e-9,
+            "flat test window should be a 0 % return, got {}",
+            fold.test_metrics.total_return
+        );
     }
 
     #[test]
