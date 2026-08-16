@@ -130,6 +130,42 @@ StrategyParams = Annotated[
 ]
 
 
+# ─── Uncertainty ──────────────────────────────────────────────────────────────
+
+class BootstrapConfigIn(BaseModel):
+    """How to bound the reported metrics.
+
+    Every performance figure is a point estimate from one finite sample. A
+    stationary bootstrap over the realised return series turns that into an
+    interval, preserving the autocorrelation and volatility clustering an IID
+    resample would destroy.
+
+    Read the result with its limits in mind: these are *within-sample* intervals.
+    They do not correct for choosing parameters by arg-max over a grid, and a
+    per-fold interval is not an interval for an average across folds.
+    """
+
+    enabled: bool = Field(
+        default=True, description="Off returns bare point estimates, as before this existed."
+    )
+    resamples: int = Field(
+        default=1000,
+        ge=100,
+        le=100_000,
+        description="Resamples drawn. 1000 costs single-digit milliseconds on a 5-year series.",
+    )
+    mean_block: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        description=(
+            "Expected block length in bars; null uses n^(1/3). 1.0 degenerates to an "
+            "IID bootstrap, which understates uncertainty on real returns."
+        ),
+    )
+    confidence: float = Field(default=0.95, gt=0.5, lt=1.0)
+    seed: int = Field(default=42, ge=0, description="Fixed so a run reproduces exactly.")
+
+
 # ─── Backtest request ─────────────────────────────────────────────────────────
 
 class BacktestRequest(BaseModel):
@@ -141,6 +177,10 @@ class BacktestRequest(BaseModel):
     fill_timing: Literal["close", "next_open"] = Field(
         default="next_open",
         description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
+    )
+    uncertainty: BootstrapConfigIn = Field(
+        default_factory=BootstrapConfigIn,
+        description="Bootstrap confidence intervals on the reported metrics.",
     )
 
 
@@ -264,6 +304,10 @@ class PortfolioRequest(BaseModel):
     fill_timing: Literal["close", "next_open"] = Field(
         default="next_open",
         description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
+    )
+    uncertainty: BootstrapConfigIn = Field(
+        default_factory=BootstrapConfigIn,
+        description="Bootstrap confidence intervals on the reported metrics.",
     )
 
 
@@ -426,6 +470,7 @@ async def backtest(req: BacktestRequest):
         req.commission,
         req.slippage_pct,
         req.fill_timing,
+        req.uncertainty.model_dump_json(),
     )
     result = json.loads(raw)
     run_id = await db.save_run("backtest", req.model_dump(mode="json"), result)
@@ -468,6 +513,7 @@ async def portfolio(req: PortfolioRequest):
         req.commission,
         req.slippage_pct,
         req.fill_timing,
+        req.uncertainty.model_dump_json(),
     )
     result = json.loads(raw)
     if req.benchmark_symbol:
@@ -664,6 +710,10 @@ class WalkForwardRequest(BaseModel):
         default="next_open",
         description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
     )
+    uncertainty: BootstrapConfigIn = Field(
+        default_factory=BootstrapConfigIn,
+        description="Bootstrap confidence intervals on the reported metrics.",
+    )
 
 
 @app.post("/walkforward")
@@ -690,6 +740,7 @@ async def walkforward(req: WalkForwardRequest):
         req.commission,
         req.slippage_pct,
         req.fill_timing,
+        req.uncertainty.model_dump_json(),
     )
     return json.loads(raw)
 

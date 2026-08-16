@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::bootstrap::BootstrapConfig;
 use crate::data::Candle;
 use crate::engine::{BacktestEngine, FillTiming};
 use crate::metrics::Metrics;
@@ -65,6 +66,17 @@ pub struct WalkForwardFold {
 #[derive(Debug, Serialize)]
 pub struct WalkForwardResult {
     pub folds: Vec<WalkForwardFold>,
+    /// Metrics for every fold's out-of-sample returns stitched into one series,
+    /// as though the walk-forward procedure had been traded continuously.
+    ///
+    /// This is the honest headline for a walk-forward run, and it is not the
+    /// average of the per-fold metrics. Averaging folds treats each as an
+    /// independent observation; pooling treats the sequence as the single
+    /// dependent return path it actually is, which is what
+    /// `docs/strategy-validation.md` argues the numbers should be read as.
+    ///
+    /// `None` when no fold produced at least two out-of-sample returns.
+    pub oos_metrics: Option<Metrics>,
 }
 
 /// Run walk-forward validation.
@@ -92,6 +104,7 @@ pub fn run_walk_forward(
     initial_cash: f64,
     costs: ExecutionCosts,
     fill_timing: FillTiming,
+    bootstrap: &BootstrapConfig,
 ) -> Result<WalkForwardResult, String> {
     if n_windows < 2 {
         return Err(format!("n_windows must be >= 2, got {n_windows}"));
@@ -112,6 +125,9 @@ pub fn run_walk_forward(
 
     let fold_len = n / n_windows;
     let mut folds: Vec<WalkForwardFold> = Vec::with_capacity(n_windows);
+    // Every fold's out-of-sample returns, in chronological order, so the run can
+    // report one bounded number for the procedure rather than only per-fold ones.
+    let mut pooled_oos: Vec<f64> = Vec::with_capacity(n);
 
     for wi in 0..n_windows {
         let fold_start = wi * fold_len;
@@ -144,9 +160,10 @@ pub fn run_walk_forward(
         // Score the best combo on the test slice, warm-started from the train
         // slice so the indicators are primed the way a live deployment's would be.
         let best_spec = &strategy_grid[best_idx];
-        let test_metrics = run_test_warm_started(
-            best_spec, fold, train_len, initial_cash, &costs, fill_timing,
+        let (test_metrics, test_returns) = run_test_warm_started(
+            best_spec, fold, train_len, initial_cash, &costs, fill_timing, bootstrap,
         )?;
+        pooled_oos.extend(test_returns);
         let train_metrics = train_metrics_vec.remove(best_idx);
 
         // Extract best_params (all fields except "type").
@@ -177,7 +194,40 @@ pub fn run_walk_forward(
         });
     }
 
-    Ok(WalkForwardResult { folds })
+    let oos_metrics = pool_out_of_sample(&pooled_oos, initial_cash, bootstrap);
+    Ok(WalkForwardResult { folds, oos_metrics })
+}
+
+/// Metrics for the stitched out-of-sample return path, with its own interval.
+///
+/// Compounds every fold's test returns into one curve, as though the walk-forward
+/// procedure had been traded continuously. The NAV levels are synthetic — capital
+/// is not really reset between folds — but every metric here is a function of the
+/// return sequence alone, so the level only sets the scale.
+fn pool_out_of_sample(
+    returns: &[f64],
+    initial_cash: f64,
+    bootstrap: &BootstrapConfig,
+) -> Option<Metrics> {
+    if returns.len() < 2 {
+        return None;
+    }
+    // Dates are placeholders: no metric reads them, a property pinned by
+    // `metrics_are_invariant_to_the_curve_dates`.
+    let base = NaiveDate::from_ymd_opt(2000, 1, 1)?;
+    let mut nav = initial_cash;
+    let mut curve = Vec::with_capacity(returns.len() + 1);
+    curve.push(EquityPoint { date: base, nav });
+    for (i, r) in returns.iter().enumerate() {
+        nav *= 1.0 + r;
+        curve.push(EquityPoint {
+            date: base + chrono::Duration::days(i as i64 + 1),
+            nav,
+        });
+    }
+    // No trade log: win rate and trade count belong to the folds, not to a
+    // stitched path that never existed as a single backtest.
+    Some(Metrics::compute(&curve, &[]).with_uncertainty(&curve, bootstrap))
 }
 
 /// Pick the winning grid index from `(score, trade_count)` pairs.
@@ -249,7 +299,8 @@ fn run_test_warm_started(
     initial_cash: f64,
     costs: &ExecutionCosts,
     fill_timing: FillTiming,
-) -> Result<Metrics, String> {
+    bootstrap: &BootstrapConfig,
+) -> Result<(Metrics, Vec<f64>), String> {
     let strategy = build_strategy_from_value(spec_val)?;
     let portfolio = Portfolio::new(initial_cash, "WF".to_string()).with_costs(costs.clone());
     let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(fill_timing);
@@ -267,7 +318,13 @@ fn run_test_warm_started(
         .into_iter()
         .filter(|t| t.date >= test_start)
         .collect();
-    Ok(Metrics::compute(&curve, &trades))
+
+    // Returned alongside the metrics so the caller can stitch every fold's
+    // out-of-sample returns into one series and bound *that*.
+    let returns: Vec<f64> = curve.windows(2).map(|w| w[1].nav / w[0].nav - 1.0).collect();
+
+    let metrics = Metrics::compute(&curve, &trades).with_uncertainty(&curve, bootstrap);
+    Ok((metrics, returns))
 }
 
 /// Run one strategy spec on a candle slice and return its metrics.
@@ -463,12 +520,105 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 2, 0.7, "sharpe_ratio",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         )
         .expect("should succeed");
 
         let fold = &result.folds[0];
         assert_eq!(fold.train_metrics.trade_count, 0, "train slice should be too short to trade");
         assert_eq!(fold.tied_candidates, 2, "both combos scored 0.0 and the tie must be reported");
+    }
+
+    // ─── Uncertainty ─────────────────────────────────────────────────────────
+
+    fn wf_with_intervals(candles: &[Candle]) -> WalkForwardResult {
+        let grid: Vec<Value> = serde_json::from_str(
+            r#"[{"type": "ma_sma", "short_window": 2, "long_window": 10}]"#,
+        )
+        .unwrap();
+        run_walk_forward(
+            candles, &grid, 3, 0.7, "sharpe_ratio",
+            10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::default(),
+        )
+        .expect("should succeed")
+    }
+
+    #[test]
+    fn walk_forward_bounds_the_test_fold_but_not_the_train_fold() {
+        // The train metric is an arg-max over the grid; an interval around a
+        // selected maximum has no valid frequentist reading, and `run_one` is the
+        // per-cell hot path besides. Only the out-of-sample number gets bounded.
+        let result = wf_with_intervals(&oscillating_candles(300));
+        for fold in &result.folds {
+            assert!(
+                fold.test_metrics.uncertainty.is_some(),
+                "fold {} test metrics should carry an interval",
+                fold.window_index
+            );
+            assert!(
+                fold.train_metrics.uncertainty.is_none(),
+                "fold {} train metrics must not be bounded",
+                fold.window_index
+            );
+        }
+    }
+
+    #[test]
+    fn the_pooled_out_of_sample_interval_is_narrower_than_the_folds_it_pools() {
+        // The point of pooling: three ~30-bar test windows bounded separately are
+        // each hopelessly wide, while the same returns as one ~90-bar series
+        // support a tighter statement. This is the number
+        // `docs/strategy-validation.md` argues should be the headline, in place of
+        // an average over folds treated as independent observations.
+        let result = wf_with_intervals(&oscillating_candles(300));
+        let pooled = result.oos_metrics.as_ref().expect("pooled metrics").uncertainty.as_ref().unwrap();
+
+        let pooled_width = pooled.sharpe_ratio.hi - pooled.sharpe_ratio.lo;
+        for fold in &result.folds {
+            let u = fold.test_metrics.uncertainty.as_ref().unwrap();
+            let fold_width = u.sharpe_ratio.hi - u.sharpe_ratio.lo;
+            assert!(
+                pooled_width < fold_width,
+                "pooled width {pooled_width:.3} should beat fold {} width {fold_width:.3}",
+                fold.window_index
+            );
+        }
+        assert!(pooled.observations > result.folds[0].test_metrics.uncertainty.as_ref().unwrap().observations);
+    }
+
+    #[test]
+    fn the_pooled_path_holds_every_folds_out_of_sample_returns() {
+        // Guards the stitching: the pooled series must be the concatenation of
+        // the per-fold test windows, not a resample of one of them.
+        let result = wf_with_intervals(&oscillating_candles(300));
+        let pooled = result.oos_metrics.as_ref().unwrap().uncertainty.as_ref().unwrap();
+        let per_fold: usize = result
+            .folds
+            .iter()
+            .map(|f| f.test_metrics.uncertainty.as_ref().unwrap().observations)
+            .sum();
+        assert_eq!(pooled.observations, per_fold);
+    }
+
+    #[test]
+    fn a_disabled_config_leaves_every_fold_and_the_pool_unbounded() {
+        let result = run_walk_forward(
+            &oscillating_candles(300),
+            &serde_json::from_str::<Vec<Value>>(
+                r#"[{"type": "ma_sma", "short_window": 2, "long_window": 10}]"#,
+            )
+            .unwrap(),
+            3, 0.7, "sharpe_ratio",
+            10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
+        )
+        .unwrap();
+        assert!(result.folds.iter().all(|f| f.test_metrics.uncertainty.is_none()));
+        // The pooled metrics still exist — they are a point estimate like any
+        // other. Only the interval is withheld.
+        assert!(result.oos_metrics.is_some());
+        assert!(result.oos_metrics.unwrap().uncertainty.is_none());
     }
 
     // ─── Warm start ──────────────────────────────────────────────────────────
@@ -487,6 +637,7 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 2, 0.7, "total_return",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         )
         .expect("should succeed");
 
@@ -517,13 +668,19 @@ mod tests {
             .expect("cold run should succeed");
         assert_eq!(cold.trade_count, 0, "a cold 15-bar slice cannot trade a 20-bar SMA");
 
-        let warm = run_test_warm_started(&spec, &candles[0..50], 35, 10_000.0, &costs, FillTiming::Close)
-            .expect("warm run should succeed");
+        let (warm, warm_returns) = run_test_warm_started(
+            &spec, &candles[0..50], 35, 10_000.0, &costs, FillTiming::Close,
+            &BootstrapConfig::off(),
+        )
+        .expect("warm run should succeed");
         assert!(
             warm.trade_count > 0,
             "warm-started run should trade the same slice, got {}",
             warm.trade_count
         );
+        // The pooled out-of-sample path is stitched from exactly these returns,
+        // one per scored test bar.
+        assert_eq!(warm_returns.len(), 14, "15 test bars yield 14 returns");
     }
 
     #[test]
@@ -555,6 +712,7 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 2, 0.7, "total_return",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         )
         .expect("should succeed");
 
@@ -581,6 +739,7 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 3, 0.7, "sharpe_ratio",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         ).expect("should succeed");
 
         assert_eq!(result.folds.len(), 3);
@@ -608,6 +767,7 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 3, 0.7, "sharpe_ratio",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         ).expect("should succeed");
 
         // Every fold's best_params must have short_window and long_window from the grid.
@@ -632,6 +792,7 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 3, 0.7, "sharpe_ratio",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         ).expect("should succeed");
 
         // For fold 0: train 7 bars (days 1–7), test 3 bars (days 8–10).
@@ -649,6 +810,7 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 5, 0.7, "sharpe_ratio",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         );
         assert!(result.is_err());
     }
@@ -660,6 +822,7 @@ mod tests {
         let result = run_walk_forward(
             &candles, &grid, 1, 0.7, "sharpe_ratio",
             10_000.0, ExecutionCosts::default(), FillTiming::Close,
+            &BootstrapConfig::off(),
         );
         assert!(result.is_err());
     }

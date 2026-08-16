@@ -617,6 +617,136 @@ def test_walkforward_fold_has_required_fields(monkeypatch, tmp_path):
         assert key in fold["test_range"]
 
 
+def _seed_long_dataset_dir(tmp_path) -> str:
+    """A dataset long enough for a fold's test slice to clear the bootstrap's
+    minimum observation count. The shared 30-bar fixture yields 4-return test
+    slices, which is deliberately below it."""
+    import math
+
+    path = tmp_path / "LONG.csv"
+    with open(path, "w", newline="") as f:
+        f.write("Date,Open,High,Low,Close,Volume\n")
+        for i in range(240):
+            close = 100.0 + 8.0 * math.sin(i / 3.0) + 0.03 * i
+            day = f"2022-{1 + i // 28:02d}-{1 + i % 28:02d}"
+            f.write(f"{day},{close},{close + 1},{close - 1},{close},1000\n")
+    return str(tmp_path)
+
+
+WF_LONG_PAYLOAD = {**WF_PAYLOAD, "dataset": "LONG.csv", "n_windows": 3}
+
+
+def _interval_is_sane(iv: dict, label: str) -> None:
+    assert iv["lo"] <= iv["hi"], f"{label}: lo {iv['lo']} above hi {iv['hi']}"
+    assert iv["std_error"] >= 0.0, f"{label}: negative std_error"
+
+
+def test_walkforward_bounds_the_out_of_sample_folds(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_long_dataset_dir(tmp_path))
+    body = client.post("/walkforward", json=WF_LONG_PAYLOAD).json()
+
+    for fold in body["folds"]:
+        u = fold["test_metrics"]["uncertainty"]
+        assert u["method"] == "stationary_bootstrap"
+        assert u["confidence"] == 0.95
+        assert u["observations"] > 0
+        for key in ("sharpe_ratio", "sortino_ratio", "cagr"):
+            _interval_is_sane(u[key], key)
+        # Max drawdown gets a spread but no endpoints: block resampling destroys
+        # the multi-month trends that produce deep drawdowns, so a percentile
+        # interval there would be biased toward optimism.
+        assert "max_drawdown_std_error" in u
+        assert "max_drawdown" not in u
+        # The train metric is an arg-max over the grid; bounding it would invite
+        # a train-vs-test comparison that carries no information.
+        assert fold["train_metrics"].get("uncertainty") is None
+
+
+def test_walkforward_reports_a_pooled_out_of_sample_interval(monkeypatch, tmp_path):
+    """The honest headline for a walk-forward run.
+
+    Pooling treats the fold sequence as the single dependent return path it is,
+    rather than as N independent observations, so the pooled series is longer than
+    any one fold and supports a correspondingly tighter statement.
+    """
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_long_dataset_dir(tmp_path))
+    body = client.post("/walkforward", json=WF_LONG_PAYLOAD).json()
+
+    pooled = body["oos_metrics"]
+    assert pooled is not None
+    u = pooled["uncertainty"]
+    _interval_is_sane(u["sharpe_ratio"], "pooled sharpe")
+
+    per_fold = sum(f["test_metrics"]["uncertainty"]["observations"] for f in body["folds"])
+    assert u["observations"] == per_fold, "pooled path must be every fold's returns"
+
+
+def test_uncertainty_can_be_switched_off(monkeypatch, tmp_path):
+    """Disabled returns exactly the payload shape that predates intervals."""
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_long_dataset_dir(tmp_path))
+    payload = {**WF_LONG_PAYLOAD, "uncertainty": {"enabled": False}}
+    body = client.post("/walkforward", json=payload).json()
+
+    for fold in body["folds"]:
+        assert "uncertainty" not in fold["test_metrics"]
+    # The pooled point estimate survives; only the interval is withheld.
+    assert "uncertainty" not in body["oos_metrics"]
+
+
+def test_the_seed_makes_an_interval_reproducible(monkeypatch, tmp_path):
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_long_dataset_dir(tmp_path))
+    first = client.post("/walkforward", json=WF_LONG_PAYLOAD).json()
+    again = client.post("/walkforward", json=WF_LONG_PAYLOAD).json()
+    assert (
+        first["oos_metrics"]["uncertainty"]["sharpe_ratio"]
+        == again["oos_metrics"]["uncertainty"]["sharpe_ratio"]
+    )
+
+    moved = client.post("/walkforward", json={**WF_LONG_PAYLOAD, "uncertainty": {"seed": 7}}).json()
+    assert (
+        moved["oos_metrics"]["uncertainty"]["sharpe_ratio"]
+        != first["oos_metrics"]["uncertainty"]["sharpe_ratio"]
+    )
+
+
+def test_a_fold_too_short_to_bootstrap_still_reports_its_metrics(monkeypatch, tmp_path):
+    """An interval is an enrichment, not a precondition.
+
+    The shared 30-bar fixture gives 4-return test slices, below the bootstrap's
+    minimum. Those folds must still come back with a Sharpe rather than erroring
+    -- and the pooled path, being the concatenation of all of them, can clear the
+    minimum even when no single fold does. That asymmetry is the case for pooling
+    in miniature.
+    """
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    body = client.post("/walkforward", json=WF_PAYLOAD).json()
+
+    for fold in body["folds"]:
+        assert "uncertainty" not in fold["test_metrics"], "4 returns is too few to bound"
+        assert "sharpe_ratio" in fold["test_metrics"], "but the estimate must survive"
+
+
+def test_sweep_responses_carry_no_intervals(monkeypatch, tmp_path):
+    """The sweep grid stays bare, deliberately.
+
+    A per-cell interval would cost cells x resamples, and a grid of independent
+    intervals invites reading a selected maximum as though the selection were
+    free -- which is what the Deflated Sharpe Ratio exists to correct, and not
+    something an interval can fix.
+    """
+    pytest.importorskip("backtesting_py")
+    monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
+    body = client.post("/sweep", json=SWEEP_PAYLOAD).json()
+    assert body["results"]
+    for point in body["results"]:
+        assert "uncertainty" not in point["metrics"]
+
+
 def test_walkforward_unknown_dataset_returns_404(monkeypatch, tmp_path):
     monkeypatch.setenv("RUSTY_FINANCE_DATA_DIR", _seed_dataset_dir(tmp_path))
     payload = {**WF_PAYLOAD, "dataset": "NOSUCHFILE.csv"}

@@ -81,6 +81,9 @@ fn main() {
             Some(RebalanceConfig { frequency: RebalanceFrequency::Monthly }),
             FillTiming::NextOpen,
             policy,
+            // Off: this benchmark times the solver, and a bootstrap on top would
+            // measure resampling instead.
+            &backtesting::bootstrap::BootstrapConfig::off(),
         );
         println!(
             "{label} {:>8.1?}  solves={:<4} rebalances={:<4} return={:>8.2}%  vol={:>6.2}%  sharpe={:>5.2}  maxdd={:>7.2}%",

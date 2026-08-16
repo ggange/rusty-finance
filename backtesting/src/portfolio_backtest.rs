@@ -10,12 +10,14 @@ use std::collections::BTreeMap;
 use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
+use crate::bootstrap::BootstrapConfig;
 use crate::data::Candle;
 use crate::engine::{BacktestEngine, BacktestResult, FillTiming};
 use crate::metrics::{Benchmark, Metrics};
 use crate::optimize::{optimize_weights, OptimizerConfig};
 use crate::portfolio::{EquityPoint, ExecutionCosts, Portfolio, TradeRecord};
 use crate::risk::RiskMetrics;
+use crate::stats::TRADING_DAYS;
 use crate::strategy::Strategy;
 
 /// How often the portfolio is rebalanced back to target weights.
@@ -177,6 +179,9 @@ pub fn run_portfolio(
         rebalance,
         fill_timing,
         WeightPolicy::Manual,
+        // Off: this wrapper is the minimal entry point, and the PyO3 layer calls
+        // `run_portfolio_with_policy` directly when a caller asks for intervals.
+        &BootstrapConfig::off(),
     )
 }
 
@@ -193,6 +198,7 @@ pub fn run_portfolio_with_policy(
     rebalance: Option<RebalanceConfig>,
     fill_timing: FillTiming,
     policy: WeightPolicy,
+    bootstrap: &BootstrapConfig,
 ) -> PortfolioResult {
     let weights: Vec<f64> = assets.iter().map(|a| a.weight).collect();
     let normalized = normalize_weights(&weights);
@@ -203,15 +209,23 @@ pub fn run_portfolio_with_policy(
         let portfolio = Portfolio::new(allocated_cash, asset.symbol.clone()).with_costs(costs.clone());
         let mut engine = BacktestEngine::new(asset.strategy, portfolio).with_fill_timing(fill_timing);
         engine.run(&asset.candles);
+        let mut result = engine.result();
+        // Per-asset too, not just portfolio level: the drill-down renders the
+        // same metric cards, so an asset card without an interval sitting beside
+        // a portfolio card with one reads as a bug rather than as a choice.
+        result.metrics = result
+            .metrics
+            .clone()
+            .with_uncertainty(&result.equity_curve, bootstrap);
         asset_results.push(AssetResult {
             symbol: asset.symbol,
             weight: w,
             allocated_cash,
-            result: engine.result(),
+            result,
         });
     }
 
-    let agg = aggregate(&asset_results, initial_cash, rebalance.as_ref(), &costs, &policy);
+    let agg = aggregate(&asset_results, initial_cash, rebalance.as_ref(), &costs, &policy, bootstrap);
     PortfolioResult {
         equity_curve: agg.equity_curve,
         metrics: agg.metrics,
@@ -247,6 +261,7 @@ fn aggregate(
     rebalance: Option<&RebalanceConfig>,
     costs: &ExecutionCosts,
     policy: &WeightPolicy,
+    bootstrap: &BootstrapConfig,
 ) -> Aggregated {
     // Union of every date that appears in any asset's curve, sorted.
     let mut dates: BTreeMap<NaiveDate, ()> = BTreeMap::new();
@@ -406,17 +421,21 @@ fn aggregate(
     // Concatenate all trades for portfolio-level trade stats (win_rate, count).
     let all_trades: Vec<TradeRecord> =
         assets.iter().flat_map(|a| a.result.trades.iter().cloned()).collect();
-    let metrics = Metrics::compute(&equity_curve, &all_trades);
+    let metrics =
+        Metrics::compute(&equity_curve, &all_trades).with_uncertainty(&equity_curve, bootstrap);
 
     // Weighted buy-and-hold: sum each asset's benchmark end NAV.
     let end_nav: f64 = assets
         .iter()
         .map(|a| a.allocated_cash * (1.0 + a.result.benchmark.total_return))
         .sum();
-    let benchmark = if initial_cash > 0.0 && !equity_curve.is_empty() {
+    let benchmark = if initial_cash > 0.0 && equity_curve.len() > 1 {
         let total_return = end_nav / initial_cash - 1.0;
-        let n = equity_curve.len() as f64;
-        let cagr = (end_nav / initial_cash).powf(252.0 / n) - 1.0;
+        // `n - 1` return periods, matching `Metrics::compute` and
+        // `Benchmark::compute`. This sits directly beside `metrics.cagr` in the
+        // UI, so a different convention here would make the comparison a lie.
+        let periods = (equity_curve.len() - 1) as f64;
+        let cagr = (end_nav / initial_cash).powf(TRADING_DAYS / periods) - 1.0;
         Benchmark { total_return, cagr }
     } else {
         Benchmark { total_return: 0.0, cagr: 0.0 }
@@ -731,6 +750,7 @@ mod tests {
             rebalance,
             FillTiming::Close,
             policy,
+            &BootstrapConfig::off(),
         )
     }
 
@@ -1059,6 +1079,7 @@ mod tests {
                 optimizer: OptimizerConfig::new(Objective::MinVariance),
                 warmup: 30,
             },
+            &BootstrapConfig::off(),
         );
         for snap in &res.weight_history {
             assert!((snap.weights[0] - 1.0).abs() < 1e-9, "{:?}", snap.weights);

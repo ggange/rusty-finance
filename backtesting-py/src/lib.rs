@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use backtesting::{
+    bootstrap::BootstrapConfig,
     data::{Candle, CSVDataSource, DataSource},
     engine::{BacktestEngine, FillTiming},
     metrics::Metrics,
@@ -120,7 +121,7 @@ fn parse_fill_timing(s: &str) -> PyResult<FillTiming> {
 ///
 /// Returns a JSON string with `equity_curve`, `trades`, `metrics`, `benchmark`.
 #[pyfunction]
-#[pyo3(signature = (strategy_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
+#[pyo3(signature = (strategy_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open", uncertainty_json=None))]
 fn run(
     strategy_json: &str,
     candles_json: &str,
@@ -128,13 +129,15 @@ fn run(
     commission: f64,
     slippage_pct: f64,
     fill_timing: &str,
+    uncertainty_json: Option<&str>,
 ) -> PyResult<String> {
     let spec: StrategySpec = serde_json::from_str(strategy_json)
         .map_err(|e| PyValueError::new_err(format!("invalid strategy JSON: {e}")))?;
     let candles = parse_candles(candles_json)?;
     let timing = parse_fill_timing(fill_timing)?;
     let strategy = build_strategy(spec)?;
-    dispatch(strategy, initial_cash, commission, slippage_pct, timing, &candles)
+    let bootstrap = parse_bootstrap(uncertainty_json)?;
+    dispatch(strategy, initial_cash, commission, slippage_pct, timing, &candles, &bootstrap)
 }
 
 /// Run a multi-asset portfolio backtest.
@@ -147,13 +150,14 @@ fn run(
 /// Returns a JSON string with `equity_curve`, `metrics`, `benchmark`, `risk`,
 /// per-asset `assets` breakdown, and optional `rebalance_dates`.
 #[pyfunction]
-#[pyo3(signature = (portfolio_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
+#[pyo3(signature = (portfolio_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open", uncertainty_json=None))]
 fn run_portfolio(
     portfolio_json: &str,
     initial_cash: f64,
     commission: f64,
     slippage_pct: f64,
     fill_timing: &str,
+    uncertainty_json: Option<&str>,
 ) -> PyResult<String> {
     let req: PortfolioRequestIn = serde_json::from_str(portfolio_json)
         .map_err(|e| PyValueError::new_err(format!("invalid portfolio JSON: {e}")))?;
@@ -182,6 +186,7 @@ fn run_portfolio(
         req.rebalance,
         timing,
         req.weight_policy.unwrap_or_default(),
+        &parse_bootstrap(uncertainty_json)?,
     );
     to_json(result)
 }
@@ -266,7 +271,7 @@ fn run_sweep(
 ///
 /// Returns a JSON string `{ "folds": [...] }`.
 #[pyfunction]
-#[pyo3(signature = (strategy_grid_json, candles_json, n_windows=5, train_frac=0.7, metric="sharpe_ratio", initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
+#[pyo3(signature = (strategy_grid_json, candles_json, n_windows=5, train_frac=0.7, metric="sharpe_ratio", initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open", uncertainty_json=None))]
 fn run_walk_forward(
     strategy_grid_json: &str,
     candles_json: &str,
@@ -277,6 +282,7 @@ fn run_walk_forward(
     commission: f64,
     slippage_pct: f64,
     fill_timing: &str,
+    uncertainty_json: Option<&str>,
 ) -> PyResult<String> {
     use backtesting::walkforward;
     let candles = parse_candles(candles_json)?;
@@ -284,7 +290,8 @@ fn run_walk_forward(
         .map_err(|e| PyValueError::new_err(format!("invalid strategy_grid JSON: {e}")))?;
     let timing = parse_fill_timing(fill_timing)?;
     let costs = ExecutionCosts { commission_per_trade: commission, slippage_pct };
-    let result = walkforward::run_walk_forward(&candles, &grid, n_windows, train_frac, metric, initial_cash, costs, timing)
+    let bootstrap = parse_bootstrap(uncertainty_json)?;
+    let result = walkforward::run_walk_forward(&candles, &grid, n_windows, train_frac, metric, initial_cash, costs, timing, &bootstrap)
         .map_err(|e| PyValueError::new_err(e))?;
     to_json(result)
 }
@@ -339,7 +346,8 @@ fn run_ma(candles_json: &str, short_window: usize, long_window: usize,
     validate_ma_windows(short_window, long_window)?;
     let candles = parse_candles(candles_json)?;
     dispatch(MovingAverageCrossover::new(MAType::EMA, short_window, long_window),
-        initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
+        initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles,
+        &BootstrapConfig::default())
 }
 
 #[pyfunction]
@@ -347,7 +355,8 @@ fn run_ma(candles_json: &str, short_window: usize, long_window: usize,
 fn run_rsi(candles_json: &str, period: usize, initial_cash: f64,
            commission: f64, slippage_pct: f64) -> PyResult<String> {
     let candles = parse_candles(candles_json)?;
-    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
+    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles,
+             &BootstrapConfig::default())
 }
 
 #[pyfunction]
@@ -357,7 +366,8 @@ fn run_ma_csv(csv_path: &str, short_window: usize, long_window: usize,
     validate_ma_windows(short_window, long_window)?;
     let candles = load_csv(csv_path)?;
     dispatch(MovingAverageCrossover::new(MAType::EMA, short_window, long_window),
-        initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
+        initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles,
+        &BootstrapConfig::default())
 }
 
 #[pyfunction]
@@ -365,7 +375,8 @@ fn run_ma_csv(csv_path: &str, short_window: usize, long_window: usize,
 fn run_rsi_csv(csv_path: &str, period: usize, initial_cash: f64,
                commission: f64, slippage_pct: f64) -> PyResult<String> {
     let candles = load_csv(csv_path)?;
-    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles)
+    dispatch(RSI::new(period), initial_cash, commission, slippage_pct, FillTiming::NextOpen, &candles,
+             &BootstrapConfig::default())
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
@@ -377,12 +388,31 @@ fn dispatch<S: backtesting::strategy::Strategy>(
     slippage_pct: f64,
     fill_timing: FillTiming,
     candles: &[Candle],
+    bootstrap: &BootstrapConfig,
 ) -> PyResult<String> {
     let portfolio = Portfolio::new(initial_cash, "SYMBOL".to_string())
         .with_costs(ExecutionCosts { commission_per_trade: commission, slippage_pct });
     let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(fill_timing);
     engine.run(candles);
-    to_json(engine.result())
+    let mut result = engine.result();
+    result.metrics = result
+        .metrics
+        .clone()
+        .with_uncertainty(&result.equity_curve, bootstrap);
+    to_json(result)
+}
+
+/// Parse a `BootstrapConfig` from JSON, defaulting when the caller passes none.
+///
+/// The legacy `run_ma`/`run_rsi` wrappers pass `None` and get the default, which
+/// is enabled — an interval is cheap and nobody calling a convenience wrapper is
+/// asking for a bare point estimate.
+fn parse_bootstrap(json: Option<&str>) -> PyResult<BootstrapConfig> {
+    match json {
+        None => Ok(BootstrapConfig::default()),
+        Some(raw) => serde_json::from_str(raw)
+            .map_err(|e| PyValueError::new_err(format!("invalid uncertainty JSON: {e}"))),
+    }
 }
 
 fn validate_ma_windows(short: usize, long: usize) -> PyResult<()> {
