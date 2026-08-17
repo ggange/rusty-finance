@@ -166,6 +166,37 @@ class BootstrapConfigIn(BaseModel):
     seed: int = Field(default=42, ge=0, description="Fixed so a run reproduces exactly.")
 
 
+class DeflationConfigIn(BaseModel):
+    """How hard to deflate a parameter search's winning Sharpe ratio.
+
+    The best cell of an N-cell sweep is a biased estimator by construction: search
+    hard enough over pure noise and the maximum Sharpe rises with no signal
+    underneath it. The Deflated Sharpe Ratio (Bailey & Lopez de Prado 2014) asks
+    how high the best of N trials would have reached under the null of no skill,
+    given how much Sharpe varied across the trials, and reports the probability
+    the winner beats that benchmark rather than beating zero.
+
+    An interval cannot substitute for this, which is why the sweep grid carries no
+    `uncertainty` field: a band around a selected maximum has no valid frequentist
+    reading.
+    """
+
+    enabled: bool = Field(
+        default=True, description="Off returns the bare grid with `selection: null`."
+    )
+    trials_override: Optional[int] = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Trials to deflate against; null uses this sweep's valid combination "
+            "count. Raise it to account for searches this sweep cannot see — other "
+            "strategies, other assets, earlier grids — since a DSR from one sweep is "
+            "an upper bound on significance. Values below the number of combinations "
+            "actually run are rejected."
+        ),
+    )
+
+
 # ─── Backtest request ─────────────────────────────────────────────────────────
 
 class BacktestRequest(BaseModel):
@@ -632,6 +663,14 @@ class SweepRequest(BaseModel):
         default="next_open",
         description="close = fill at same bar's close (legacy); next_open = fill at next bar's open (realistic)",
     )
+    # No `uncertainty` field, deliberately. A confidence interval per grid cell
+    # would cost cells x resamples and, worse, would present a selected maximum as
+    # though the selection were free. `deflation` is the correction that applies
+    # here.
+    deflation: DeflationConfigIn = Field(
+        default_factory=DeflationConfigIn,
+        description="Multiple-testing correction on the grid's best cell.",
+    )
 
 
 def _expand_param_grid(strategy_type: str, param_ranges: dict[str, "ParamRange"]) -> list[dict]:
@@ -673,15 +712,36 @@ def _validate_strategy_spec(spec: dict) -> None:
 async def sweep(req: SweepRequest):
     """Run one strategy over a grid of parameter combinations on a single dataset.
 
-    Returns a list of `{ params, metrics }` objects — one per valid combination.
-    Combinations that violate strategy constraints (e.g. short_window >= long_window)
-    are silently skipped.
+    Returns `{results, selection}`. `results` is a list of `{ params, metrics }`
+    objects — one per valid combination. Combinations that violate strategy
+    constraints (e.g. short_window >= long_window) are silently skipped.
+
+    `selection` is the Deflated Sharpe Ratio of the grid's best cell: the
+    probability the winner beats what a search this size would have produced by
+    luck alone. It is `null` when deflation is disabled, or when the grid is too
+    small or too degenerate to deflate — a correction that cannot be computed is
+    reported as absent, never as a failed sweep.
     """
     _require_engine()
     candles = _load_dataset(req.dataset)
     grid = _expand_param_grid(req.strategy_type, req.param_ranges)
     if not grid:
         raise HTTPException(status_code=422, detail="No valid parameter combinations in the given ranges")
+
+    # Checked here rather than left to the engine because it is a malformed
+    # request, not an uncomputable correction: only this layer knows how many
+    # combinations survived validation, and the two failure modes must not both
+    # collapse into `selection: null`.
+    override = req.deflation.trials_override
+    if override is not None and override < len(grid):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"trials_override ({override}) is below the {len(grid)} valid combinations "
+                "in this grid; deflating against fewer trials than were run would weaken "
+                "the correction"
+            ),
+        )
 
     raw = bt.run_sweep(
         json.dumps(grid),
@@ -690,8 +750,9 @@ async def sweep(req: SweepRequest):
         req.commission,
         req.slippage_pct,
         req.fill_timing,
+        req.deflation.model_dump_json(),
     )
-    return {"results": json.loads(raw)}
+    return json.loads(raw)
 
 
 # ─── Walk-forward request ─────────────────────────────────────────────────────

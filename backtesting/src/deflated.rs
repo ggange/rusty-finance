@@ -24,7 +24,7 @@
 //! Trial multiplicity across folds and assets needs the probability of backtest
 //! overfitting, not this.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::stats::{
     kurtosis, normal_cdf, normal_quantile, population_std_dev, skewness, EULER_MASCHERONI,
@@ -49,6 +49,7 @@ pub struct Trial<'a> {
 }
 
 /// How hard to deflate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeflationConfig {
     /// When false, callers skip the correction entirely and report nothing.
     pub enabled: bool,

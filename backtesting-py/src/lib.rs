@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use backtesting::{
     bootstrap::BootstrapConfig,
     data::{Candle, CSVDataSource, DataSource},
+    deflated::{deflate, DeflationConfig, SelectionCorrection, Trial},
     engine::{BacktestEngine, FillTiming},
     metrics::Metrics,
     portfolio::{ExecutionCosts, Portfolio},
@@ -222,9 +223,17 @@ fn optimize_weights(returns_json: &str, config_json: &str) -> PyResult<String> {
 /// `strategy_grid_json` is a JSON array of full strategy objects (including `type`),
 /// each representing one parameter combination to test.
 ///
-/// Returns a JSON array of `{ params, metrics }` objects in the same order as the grid.
+/// `deflation_json` tunes the multiple-testing correction (`{enabled,
+/// trials_override}`); `None` uses the defaults, which are on.
+///
+/// Returns a JSON object `{ results, selection }`. `results` is an array of
+/// `{ params, metrics }` in the same order as the grid, and `selection` is the
+/// deflated Sharpe ratio of the grid's best cell — `null` when the correction is
+/// disabled or not computable. No cell carries a bootstrap interval: an interval
+/// per grid cell would invite reading a selected maximum as if the selection were
+/// free, which is precisely what `selection` corrects.
 #[pyfunction]
-#[pyo3(signature = (strategy_grid_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open"))]
+#[pyo3(signature = (strategy_grid_json, candles_json, initial_cash=10_000.0, commission=0.0, slippage_pct=0.0, fill_timing="next_open", deflation_json=None))]
 fn run_sweep(
     strategy_grid_json: &str,
     candles_json: &str,
@@ -232,6 +241,7 @@ fn run_sweep(
     commission: f64,
     slippage_pct: f64,
     fill_timing: &str,
+    deflation_json: Option<&str>,
 ) -> PyResult<String> {
     #[derive(Serialize)]
     struct SweepPoint {
@@ -239,12 +249,25 @@ fn run_sweep(
         metrics: Metrics,
     }
 
+    #[derive(Serialize)]
+    struct SweepOut {
+        results: Vec<SweepPoint>,
+        selection: Option<SelectionCorrection>,
+    }
+
     let timing = parse_fill_timing(fill_timing)?;
     let candles = parse_candles(candles_json)?;
+    let deflation = parse_deflation(deflation_json)?;
     let raw_specs: Vec<serde_json::Value> = serde_json::from_str(strategy_grid_json)
         .map_err(|e| PyValueError::new_err(format!("invalid strategy_grid JSON: {e}")))?;
 
     let mut results: Vec<SweepPoint> = Vec::with_capacity(raw_specs.len());
+    // Per-cell return paths, kept only long enough to deflate. The winner's are
+    // what supply the skew and kurtosis, and holding every cell's rather than
+    // tracking a running arg-max means the returns cannot end up paired with a
+    // different cell's Sharpe. Roughly 8 bytes per bar per cell — under a
+    // megabyte for a 100-cell grid on five years of daily data.
+    let mut paths: Vec<Vec<f64>> = Vec::with_capacity(raw_specs.len());
     for raw in raw_specs {
         let spec: StrategySpec = serde_json::from_value(raw.clone())
             .map_err(|e| PyValueError::new_err(format!("invalid strategy spec: {e}")))?;
@@ -257,9 +280,31 @@ fn run_sweep(
             .with_costs(ExecutionCosts { commission_per_trade: commission, slippage_pct });
         let mut engine = BacktestEngine::new(strategy, portfolio).with_fill_timing(timing);
         engine.run(&candles);
-        results.push(SweepPoint { params, metrics: engine.result().metrics });
+        let result = engine.result();
+        paths.push(
+            result.equity_curve.windows(2)
+                .map(|w| w[1].nav / w[0].nav - 1.0)
+                .collect(),
+        );
+        results.push(SweepPoint { params, metrics: result.metrics });
     }
-    to_json(results)
+
+    // A failed deflation is reported as an absent correction, never as a failed
+    // sweep — the grid itself is still the answer to what was asked.
+    let selection = if deflation.enabled {
+        let trials: Vec<Trial> = results.iter().zip(&paths)
+            .map(|(point, returns)| Trial {
+                annualized_sharpe: point.metrics.sharpe_ratio,
+                returns,
+                trade_count: point.metrics.trade_count,
+            })
+            .collect();
+        deflate(&trials, &deflation).ok()
+    } else {
+        None
+    };
+
+    to_json(SweepOut { results, selection })
 }
 
 /// Run walk-forward validation over a candle dataset.
@@ -412,6 +457,14 @@ fn parse_bootstrap(json: Option<&str>) -> PyResult<BootstrapConfig> {
         None => Ok(BootstrapConfig::default()),
         Some(raw) => serde_json::from_str(raw)
             .map_err(|e| PyValueError::new_err(format!("invalid uncertainty JSON: {e}"))),
+    }
+}
+
+fn parse_deflation(json: Option<&str>) -> PyResult<DeflationConfig> {
+    match json {
+        None => Ok(DeflationConfig::default()),
+        Some(raw) => serde_json::from_str(raw)
+            .map_err(|e| PyValueError::new_err(format!("invalid deflation JSON: {e}"))),
     }
 }
 

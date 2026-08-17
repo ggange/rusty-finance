@@ -454,6 +454,97 @@ def test_sweep_skips_invalid_combinations():
         assert r["params"]["short_window"] < r["params"]["long_window"]
 
 
+def test_sweep_reports_a_deflated_sharpe_for_the_grids_best_cell():
+    """The correction on the UI element that invites the error.
+
+    Picking the grid's maximum is the purest overfitting available; `selection`
+    is the sweep telling you how high that maximum would have got with no signal
+    at all.
+    """
+    pytest.importorskip("backtesting_py")
+    body = client.post("/sweep", json=SWEEP_PAYLOAD).json()
+    sel = body["selection"]
+
+    assert sel["method"] == "deflated_sharpe_ratio"
+    assert sel["trials"] == len(body["results"]) == sel["trials_run"]
+    assert not sel["trials_overridden"]
+    assert 0 <= sel["best_index"] < len(body["results"])
+    assert sel["tied_at_best"] >= 1
+    # The winner's Sharpe is the grid's maximum, and the payload repeats it so the
+    # correction can be read without cross-referencing the grid.
+    assert sel["sharpe_ratio"] == max(p["metrics"]["sharpe_ratio"] for p in body["results"])
+    assert sel["sharpe_ratio"] == body["results"][sel["best_index"]]["metrics"]["sharpe_ratio"]
+
+    for key in ("deflated_sharpe", "probabilistic_sharpe"):
+        assert 0.0 <= sel[key] <= 1.0, f"{key} is a probability"
+    # SR* >= 0 always, so the correction can only ever weaken the verdict.
+    assert sel["expected_max_sharpe"] >= 0
+    assert sel["deflated_sharpe"] <= sel["probabilistic_sharpe"]
+    assert sel["observations"] > 100, "the real AAPL series is years long"
+
+
+def test_sweep_deflation_can_be_disabled():
+    pytest.importorskip("backtesting_py")
+    payload = {**SWEEP_PAYLOAD, "deflation": {"enabled": False}}
+    body = client.post("/sweep", json=payload).json()
+    assert body["results"], "the grid is still the answer to what was asked"
+    assert body["selection"] is None
+
+
+def test_sweep_deflates_harder_against_an_overridden_trial_count():
+    """A sweep cannot see the searches that preceded it.
+
+    N from one grid is an upper bound on significance, so supplying the honest
+    count must make the verdict stricter.
+    """
+    pytest.importorskip("backtesting_py")
+    plain = client.post("/sweep", json=SWEEP_PAYLOAD).json()["selection"]
+    wide = client.post(
+        "/sweep", json={**SWEEP_PAYLOAD, "deflation": {"trials_override": 5000}}
+    ).json()["selection"]
+
+    assert wide["trials"] == 5000
+    assert wide["trials_overridden"] and not plain["trials_overridden"]
+    assert wide["trials_run"] == plain["trials_run"], "the grid itself did not change"
+    assert wide["expected_max_sharpe"] > plain["expected_max_sharpe"]
+    assert wide["deflated_sharpe"] < plain["deflated_sharpe"]
+
+
+def test_sweep_rejects_an_override_below_the_grid_size():
+    """Deflating against fewer trials than were demonstrably run.
+
+    A 422 rather than a silent `selection: null`, because it is a malformed
+    request and not an uncomputable correction -- the two must stay
+    distinguishable from the response alone.
+    """
+    pytest.importorskip("backtesting_py")
+    payload = {**SWEEP_PAYLOAD, "deflation": {"trials_override": 2}}
+    resp = client.post("/sweep", json=payload)
+    assert resp.status_code == 422
+    assert "below the" in resp.json()["detail"]
+
+
+def test_sweep_with_a_single_combination_reports_no_correction():
+    """A search of one is not a search.
+
+    The expected maximum of one trial involves the inverse normal CDF at 1.0,
+    which is infinite. That degeneracy is reported as an absent correction rather
+    than clamped into a penalty that does not exist -- and the grid still returns
+    200.
+    """
+    pytest.importorskip("backtesting_py")
+    payload = {
+        "dataset": "AAPL.csv",
+        "strategy_type": "rsi",
+        "param_ranges": {"period": {"min": 14, "max": 14, "step": 1}},
+    }
+    resp = client.post("/sweep", json=payload)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["results"]) == 1
+    assert body["selection"] is None
+
+
 def test_sweep_unknown_dataset_returns_404():
     pytest.importorskip("backtesting_py")
     payload = {**SWEEP_PAYLOAD, "dataset": "UNKNOWN.csv"}
