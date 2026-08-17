@@ -22,7 +22,8 @@ import {
   formatMetric,
   getMetricValue as readMetric,
 } from "../../lib/metrics";
-import type { SweepPoint } from "../../types/api";
+import { SelectionPanel } from "./SelectionPanel";
+import type { SelectionCorrection, SweepPoint } from "../../types/api";
 import type { SweepStatus } from "../../hooks/useSweep";
 
 /** A missing metric sorts to the bottom rather than to zero. */
@@ -251,6 +252,8 @@ function BestCombo({ results, metric }: { results: SweepPoint[]; metric: string 
 
 interface SweepResultsPanelProps {
   results: SweepPoint[];
+  /** Null when deflation is off or the grid is too small; the panel then renders as before. */
+  selection: SelectionCorrection | null;
   status: SweepStatus;
   error: string | null;
   metric: string;
@@ -258,6 +261,7 @@ interface SweepResultsPanelProps {
 
 export function SweepResultsPanel({
   results,
+  selection,
   status,
   error,
   metric,
@@ -308,8 +312,9 @@ export function SweepResultsPanel({
   return (
     <div className="space-y-4">
       <Panel title={`Sweep results — ${results.length} combinations`}>
-        <div className="mb-4">
+        <div className="mb-4 space-y-2">
           <BestCombo results={results} metric={metric} />
+          {selection && <SelectionPanel selection={selection} metric={metric} />}
         </div>
         {variedKeys.length === 1 ? (
           <SweepBarChart results={results} paramKey={variedKeys[0]} metric={metric} />

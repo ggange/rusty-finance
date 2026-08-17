@@ -161,6 +161,7 @@ export default function App() {
                 />
                 <SweepResultsPanel
                   results={sweep.results}
+                  selection={sweep.selection}
                   status={sweep.status}
                   error={sweep.error}
                   metric={sweepMetric}

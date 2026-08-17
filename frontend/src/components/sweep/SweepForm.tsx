@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { ParamRangeGrid } from "../config/ParamRangeGrid";
 import { Button } from "../ui/Button";
 import { Field } from "../ui/Field";
+import { Input } from "../ui/Input";
 import { Panel } from "../ui/Panel";
 import { Select } from "../ui/Select";
 import { METRIC_OPTIONS } from "../../lib/metrics";
@@ -32,6 +33,9 @@ export function SweepForm({
   const [strategyType, setStrategyType] = useState<StrategyType>(strategies[0]?.type ?? "ma_ema");
   const [metric, setMetric] = useState("sharpe_ratio");
   const [paramRanges, setParamRanges] = useState<Record<string, ParamRange>>({});
+  // Blank means "deflate against this grid's own combination count", which is the
+  // most the sweep can know on its own.
+  const [trialsOverride, setTrialsOverride] = useState("");
 
   const selectedStrategy = strategies.find((s) => s.type === strategyType);
 
@@ -69,6 +73,10 @@ export function SweepForm({
         initial_cash: initialCash,
         commission,
         slippage_pct: slippagePct,
+        deflation: {
+          enabled: true,
+          trials_override: trialsOverride.trim() === "" ? null : Number(trialsOverride),
+        },
       },
       metric,
     );
@@ -120,6 +128,22 @@ export function SweepForm({
                 </option>
               ))}
             </Select>
+          </Field>
+
+          <Field
+            label="Trials to deflate against"
+            htmlFor="sweep-trials"
+            hint="Blank = this grid's combination count. Raise it to include searches this sweep cannot see — other strategies, other assets, earlier grids — since a deflated Sharpe from one grid is an upper bound on significance."
+          >
+            <Input
+              id="sweep-trials"
+              type="number"
+              min={2}
+              step={1}
+              placeholder="grid size"
+              value={trialsOverride}
+              onChange={(e) => setTrialsOverride(e.target.value)}
+            />
           </Field>
         </div>
       </Panel>

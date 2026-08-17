@@ -313,6 +313,15 @@ export interface ParamRange {
   step: number;
 }
 
+export interface DeflationConfig {
+  enabled?: boolean;
+  /**
+   * Trials to deflate against; null uses the grid's own combination count. Raise
+   * it for searches this sweep cannot see. Values below the grid size are a 422.
+   */
+  trials_override?: number | null;
+}
+
 export interface SweepRequest {
   dataset: string;
   strategy_type: string;
@@ -321,6 +330,7 @@ export interface SweepRequest {
   commission: number;
   slippage_pct: number;
   fill_timing?: FillTiming;
+  deflation?: DeflationConfig;
 }
 
 export interface SweepPoint {
@@ -328,8 +338,49 @@ export interface SweepPoint {
   metrics: Metrics;
 }
 
+/**
+ * Deflated Sharpe Ratio for the grid's best cell (Bailey & López de Prado 2014).
+ *
+ * A property of the *search*, not of any one cell, which is why it arrives as a
+ * sibling of `results` rather than as a field on a `SweepPoint`. It is the
+ * counterpart to `MetricUncertainty`: an interval cannot fix selection bias,
+ * because a band around a selected maximum has no valid frequentist reading.
+ *
+ * Every Sharpe-dimensioned field is annualised, matching the rest of the UI.
+ */
+export interface SelectionCorrection {
+  method: string;
+  /** N: the trial count deflated against. */
+  trials: number;
+  /** Grid cells with a finite Sharpe. Equals `trials` unless overridden. */
+  trials_run: number;
+  trials_that_traded: number;
+  trials_overridden: boolean;
+  /** Index into `results`. */
+  best_index: number;
+  /** Above one means the search did not really select this cell. */
+  tied_at_best: number;
+  /** T: return observations in the winning cell. */
+  observations: number;
+  sharpe_ratio: number;
+  trial_sharpe_std_dev: number;
+  /** SR*: the Sharpe the best of N trials reaches with no skill at all. */
+  expected_max_sharpe: number;
+  skewness: number;
+  /** Non-excess: 3.0 for a normal sample. */
+  kurtosis: number;
+  /** PSR(0): the uncorrected probability the true Sharpe exceeds zero. */
+  probabilistic_sharpe: number;
+  /** PSR(SR*): the headline. Below ~0.95 the winner is not distinguishable from luck. */
+  deflated_sharpe: number;
+  /** Fewer than half the cells ever traded, so the trial spread is an artefact. */
+  degenerate_trials_dominate: boolean;
+}
+
 export interface SweepResponse {
   results: SweepPoint[];
+  /** Null when deflation is disabled, or when the grid is too small to deflate. */
+  selection?: SelectionCorrection | null;
 }
 
 // ─── /runs ──────────────────────────────────────────────────────────────────
