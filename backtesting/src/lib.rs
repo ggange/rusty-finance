@@ -36,6 +36,7 @@ pub mod portfolio;
 pub mod portfolio_backtest;
 pub mod metrics;
 pub mod bootstrap;
+pub mod deflated;
 pub mod optimize;
 pub mod risk;
 mod stats;
