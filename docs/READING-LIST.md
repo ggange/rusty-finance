@@ -18,12 +18,15 @@ theory behind it.
 | `metrics.rs`, annualisation, return series | §2 Foundations |
 | `data.rs`, `datasets.py`, `scripts/fetch_data.py` | §3 Data |
 | `metrics.rs`, `risk.rs`, the metrics + risk panels | §4 Performance measurement |
+| `bootstrap.rs`, the intervals on the metric cards and folds | §4 Performance measurement |
 | `sweep.rs`, `walkforward.rs`, both those tabs | §5 Backtesting & overfitting |
+| `deflated.rs`, the sweep tab's selection-correction panel | §5 Backtesting & overfitting |
 | `strategy/` — RSI, MACD, Bollinger, crossovers | §6 Technical trading rules |
 | `SizingRule` in `portfolio.rs`, `cash_allocation` | §7 Position sizing † |
 | `optimize.rs`, the weight-policy panel | §8 Portfolio construction |
 | `RebalanceConfig` — monthly / quarterly / threshold | §9 Rebalancing |
-| `project_to_simplex()`, gradient descent, line search | §10 Optimisation mechanics |
+| `project_to_simplex()`, gradient descent, line search | §10 Optimisation and numerics |
+| `stats.rs` — Φ, Φ⁻¹, the population moment estimators | §10 Optimisation and numerics |
 | `ExecutionCosts`, `FillTiming`, `engine.rs`, Soak panel | §11 Execution & microstructure |
 | `trading.py`, `broker.py`, `scheduler.py`, reconcile, kill switch | §12 Live trading operations |
 | The whole job, for breadth | §13 Practitioner books |
@@ -172,15 +175,29 @@ introduces a specific bias worth understanding.
 - ★ **Lo — "The Statistics of Sharpe Ratios"** (*Financial Analysts Journal*,
   58(4), 2002). The Sharpe ratio is an *estimate* with a standard error, and
   when returns are autocorrelated the usual √12 or √252 annualisation is simply
-  wrong. This is the paper that tells you how wide your error bars are.
+  wrong. This is the paper that tells you how wide your error bars are. **Now
+  implemented:** eq. 9 is the IID standard error that `bootstrap.rs:371` uses as
+  its oracle, and the η(q) factor at `bootstrap.rs:405` is Lo's
+  autocorrelation-corrected annualisation. Read §4's uncertainty block below
+  next.
 - **Sharpe — "The Sharpe Ratio"** (*Journal of Portfolio Management*, 21(1),
   1994). The author's own restatement, clarifying what the ratio does and
   doesn't claim.
-- **Bailey & López de Prado — "The Deflated Sharpe Ratio: Correcting for
+- ★ **Bailey & López de Prado — "The Deflated Sharpe Ratio: Correcting for
   Selection Bias, Backtest Overfitting and Non-Normality"** (*Journal of
   Portfolio Management*, 40(5), 2014). How to discount a Sharpe ratio by the
-  number of configurations you tried to find it. Directly applicable to the
-  Sweep tab.
+  number of configurations you tried to find it. **Now implemented** in
+  `backtesting/src/deflated.rs` and reported under the sweep tab's best-cell
+  callout: eqs. 10–11 are `expected_max_sharpe`, and the deflation itself is the
+  Probabilistic Sharpe Ratio evaluated at that threshold rather than at zero.
+  Read it against a real grid — RSI on MSFT deflates a 0.55 Sharpe from
+  PSR 0.92 down to DSR 0.71 once its 26 trials are counted. The paper's
+  limitation is the one the panel states: it counts the trials in *one* sweep, so
+  it is an upper bound on significance. Its non-normality term comes from
+  **Mertens — "Comments on Variance of the IID Estimator in Lo (2002)"** (2002),
+  the skew/kurtosis-aware estimator variance in the PSR denominator; and the PSR
+  itself is defined in Bailey & López de Prado's *Sharpe Ratio Efficient
+  Frontier* paper in §5.
 - ★ **Artzner, Delbaen, Eber & Heath — "Coherent Measures of Risk"**
   (*Mathematical Finance*, 9(3), 1999). The axiomatic case for why VaR is not a
   coherent risk measure (it can penalise diversification) and CVaR is. This is
@@ -197,6 +214,29 @@ introduces a specific bias worth understanding.
   expected maximum drawdown of a random walk, in closed form. Extremely useful:
   it tells you how much of your `max_drawdown` is signal and how much is just
   what a driftless process does over that many bars.
+
+**On the intervals themselves**, which `bootstrap.rs` attaches to the Sharpe,
+Sortino, CAGR and max-drawdown on every metric card and every walk-forward fold:
+
+- ★ **Politis & Romano — "The Stationary Bootstrap"** (*JASA*, 89(428), 1994).
+  The resampling scheme the module implements: blocks of geometric length,
+  wrapping at the end of the series, so the resamples stay stationary while
+  local autocorrelation and volatility clustering survive. The reason to read it
+  is the reason it was chosen — an IID bootstrap destroys serial dependence and
+  therefore returns an interval that is too *tight*, which is the one direction
+  an honesty feature must not fail in.
+- **Efron & Tibshirani — *An Introduction to the Bootstrap*** (Chapman & Hall,
+  1993). Where percentile intervals, bias and the general logic come from, if
+  Politis & Romano is the first bootstrap paper you've read.
+- **Künsch — "The Jackknife and the Bootstrap for General Stationary
+  Observations"** (*Annals of Statistics*, 17(3), 1989). The moving-block
+  bootstrap, i.e. the fixed-length predecessor. Worth a skim purely to see what
+  randomising the block length buys.
+- **Jobson & Korkie — "Performance Hypothesis Testing with the Sharpe and
+  Treynor Measures"** (*Journal of Finance*, 36(4), 1981). The closed-form IID
+  standard error, which the test suite uses as the oracle the bootstrap has to
+  reproduce on synthetic independent returns before it is trusted on dependent
+  ones.
 
 **On beta**, which `risk.rs` computes per asset against the portfolio series,
 and which the SPY overlay implicitly invokes:
@@ -218,8 +258,9 @@ and which the SPY overlay implicitly invokes:
 
 ## 5. Backtesting and overfitting — the discipline that makes the rest worth doing
 
-*Explains: `sweep.rs`, `walkforward.rs`, `docs/strategy-validation.md`, and why
-the Sweep tab is a diagnostic rather than a selector.*
+*Explains: `sweep.rs`, `walkforward.rs`, `deflated.rs`,
+`docs/strategy-validation.md`, and why the Sweep tab is a diagnostic rather than
+a selector.*
 
 This is the section that separates a platform from a random-number generator.
 If you're short on time, spend it here.
@@ -232,7 +273,12 @@ If you're short on time, spend it here.
 - ★ **Bailey, Borwein, López de Prado & Zhu — "The Probability of Backtest
   Overfitting"** (*Journal of Computational Finance*, 20(4), 2016). Formalises
   PBO: given how many variants you tested, what's the chance your best one is
-  below-median out-of-sample? Often above 50%.
+  below-median out-of-sample? Often above 50%. **Read this one next if you plan
+  to touch the code:** PBO via CSCV is the current next roadmap item, and its
+  prerequisite already exists — the sweep holds the full trials × observations
+  return matrix that CSCV partitions. It answers what the Deflated Sharpe
+  deliberately cannot: multiplicity *across folds and assets* rather than within
+  one grid.
 - **Harvey & Liu — "Backtesting"** (*Journal of Portfolio Management*, 42(1),
   2015). Practical, readable haircuts to apply to a reported Sharpe based on
   multiple testing.
@@ -252,7 +298,11 @@ If you're short on time, spend it here.
   what your Walk-forward tab implements.
 - **Bailey & López de Prado — "The Sharpe Ratio Efficient Frontier"**
   (*Journal of Risk*, 15(2), 2012). How long a track record must be before a
-  Sharpe ratio is statistically distinguishable from zero.
+  Sharpe ratio is statistically distinguishable from zero. This is where the
+  Probabilistic Sharpe Ratio and minimum track record length are defined, so it
+  is the direct prerequisite for the deflation in §4 — `deflated.rs` reports the
+  PSR beside the DSR precisely so the size of the selection correction is
+  visible rather than inferred.
 
 ---
 
@@ -286,7 +336,7 @@ at least as much effect on the equity curve as signal quality does, and unlike
 signal quality it has clean, settled theory behind it.
 
 Worth knowing before you read further: `Portfolio::with_sizing()` exists at
-`portfolio.rs:97` but is **never called anywhere in the repo**. Every backtest
+`portfolio.rs:97` but is **never called outside its own unit tests**. Every backtest
 and every live tick runs `SizingRule::AllIn` — the entire sleeve in, the entire
 sleeve out — and there is no API field or UI control to change it. So this
 section is currently theory for a knob you'd have to wire up. It is, in my view,
@@ -402,10 +452,11 @@ distribution of its own, and it is implicitly a bet on mean reversion.
 
 ---
 
-## 10. Optimisation mechanics — how the solver works
+## 10. Optimisation and numerics — how the solver and the distribution functions work
 
 *Explains: `project_to_simplex()`, the projected gradient descent, the
-backtracking line search, `covariance()`.*
+backtracking line search, `covariance()`, and the Φ / Φ⁻¹ / moment primitives in
+`stats.rs`.*
 
 - ★ **Boyd & Vandenberghe — *Convex Optimization*** (Cambridge, 2004). **Free
   PDF from Stanford.** Chapter 9 (unconstrained methods, backtracking line
@@ -423,7 +474,37 @@ backtracking line search, `covariance()`.*
 - **Higham — *Accuracy and Stability of Numerical Algorithms*** (SIAM, 2nd ed.
   2002). Covariance estimation is a textbook source of catastrophic
   cancellation, and your `covariance()` runs on f64 over thousands of small
-  returns. This is the reference for knowing when that matters.
+  returns. This is the reference for knowing when that matters. It is also the
+  reference for the failure `population_std_dev` guards against: ten copies of
+  `0.02` do not sum to `0.2`, so a constant series has nonzero computed variance,
+  and dividing that dust by itself manufactured a skewness of exactly 1.0 until
+  degeneracy was judged relative to the scale of the data.
+
+**On the normal distribution functions**, which `deflated.rs` needs because a
+DSR is a probability, and which are hand-rolled because the crate takes no
+numerical dependencies:
+
+- ★ **West — "Better Approximations to Cumulative Normal Functions"**
+  (*Wilmott Magazine*, May 2005), implementing **Hart (1968)**. The rational form
+  in `normal_cdf`, accurate to ~1e-15 relative. The instructive part is *why not*
+  Abramowitz & Stegun 7.1.26, the approximation nearly every blog post reaches
+  for: its error bound is 1.5e-7 **absolute**, which caps a near-one probability
+  at four decimals — and "DSR = 0.9997" is exactly the reading that has to be
+  trustworthy. Absolute versus relative error is the whole lesson.
+- **Acklam — "An Algorithm for Computing the Inverse Normal Cumulative
+  Distribution Function"** (2000; widely mirrored). The Φ⁻¹ in `normal_quantile`,
+  1.15e-9 relative, taken to machine precision by one Halley step against
+  `normal_cdf`.
+- **Wichura — "Algorithm AS 241: The Percentage Points of the Normal
+  Distribution"** (*Applied Statistics*, 37(3), 1988). The independent Φ⁻¹ that
+  Python's `statistics.NormalDist.inv_cdf` implements, which is what the
+  `deflated.rs` tests cross-check the hand-derived Bailey threshold against —
+  agreeing to the last bit. Worth knowing about mainly as the standard way to
+  test a quantile function: against a different algorithm, not against your own.
+- **Abramowitz & Stegun — *Handbook of Mathematical Functions*** (Dover, 1964),
+  §26.2. Still the reference for the Mills-ratio continued fraction that
+  `normal_cdf` switches to beyond |z| = 5√2, where preserving *relative*
+  accuracy in the far tail matters more than the rational form's absolute error.
 
 ---
 
@@ -540,7 +621,7 @@ that runs unattended with real consequences.
 
 **Testing numerical code**
 
-Worth a mention given the repo runs 400+ tests across three languages.
+Worth a mention given the repo runs 600+ tests across three languages.
 
 - **Goldberg — "What Every Computer Scientist Should Know About Floating-Point
   Arithmetic"** (*ACM Computing Surveys*, 23(1), 1991; free). Why your tests
@@ -595,11 +676,16 @@ and Lo. Frames every result you'll get afterwards.
 **Weeks 2–3 — don't get fooled.** §0 items 1 and 4, then Cont (§2), Lo's Sharpe
 paper (§4), and Brown et al. on survivorship (§3). You'll never read a Sharpe
 ratio the same way again — and you'll look at your five-survivor dataset
-differently.
+differently. Two of these are now readable against running code: Lo's standard
+error is the interval on every metric card, and Politis & Romano (§4) is how it
+is computed under dependence.
 
 **Weeks 4–5 — validate properly.** §5 in full, then Brock et al. against
 Sullivan et al. (§6). Then re-run your own Walk-forward tab and re-read
-`strategy-validation.md` with new eyes.
+`strategy-validation.md` with new eyes. Read the Deflated Sharpe paper (§4) with
+the sweep tab open on a grid you care about: the gap between the PSR and the DSR
+on screen *is* the cost of the search, and it is usually larger than intuition
+suggests.
 
 **Week 6 — how much.** §7. Short section, large effect, and the one most likely
 to change your equity curve immediately.
