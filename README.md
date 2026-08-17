@@ -22,10 +22,12 @@ strategies through a simulated trading loop with risk limits and a kill switch.
 - **The reported results state their own limits.** That validation doc opens by
   quantifying its own error bars and concluding that its headline Sharpes are
   *not* statistically distinguishable from zero at this sample size — the
-  strategy *ranking* is informative, the magnitudes are not. Confidence
-  intervals, Deflated Sharpe and probability-of-backtest-overfitting are the
-  active roadmap item; until they ship, the doc says so rather than implying
-  otherwise.
+  strategy *ranking* is informative, the magnitudes are not. Bootstrap confidence
+  intervals and the Deflated Sharpe Ratio now ship — a sweep reports the
+  probability its own best cell beats what a search that size reaches by luck, and
+  on real data it comes back below the 95 % bar. Probability-of-backtest-overfitting
+  is the remaining active item; until it ships, that doc says so rather than
+  implying otherwise.
 - **Compute in Rust, orchestration in Python.** The engine, metrics, optimiser
   and walk-forward loop are Rust; PyO3 exposes them to a FastAPI layer, so the
   hot path stays fast without giving up the Python ecosystem.

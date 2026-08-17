@@ -534,16 +534,64 @@ currently overstates what it knows. Each item is a metric with a paper behind it
   intervals. They do not correct for parameter selection (Deflated Sharpe) or for
   repeated trials across correlated assets and folds (PBO, CPCV). A narrow
   interval here is necessary and nowhere near sufficient.
-- **Deflated Sharpe Ratio** (Bailey & López de Prado 2014) on sweep output.
-  Every input is already available: the number of trials, the variance of Sharpe
-  across trials, the sample length, and the winner's skew and kurtosis. Surface
-  it directly beside the "best combo" callout, so the UI element that currently
-  invites overfitting is the one that reports its own bias.
-- **Probability of Backtest Overfitting** via combinatorially-symmetric
-  cross-validation (Bailey, Borwein, López de Prado & Zhu 2017). Answers "what
-  fraction of the time does my in-sample winner underperform the median
-  out-of-sample?" — a single number per research process, which is the honest
-  unit of measurement for a parameter search.
+- ✅ **Deflated Sharpe Ratio (2026-08-17).** Bailey & López de Prado (2014) in
+  `backtesting/src/deflated.rs`. `POST /sweep` returns `{results, selection}`,
+  where `selection` reports the probability the grid's best cell beats what a
+  search of `N` trials reaches under the null of no skill — rendered directly
+  under the green "best combination" callout, so the UI element that invited the
+  error is the one that reports it. Zero new dependencies: the normal CDF (Hart /
+  West), its inverse (Acklam plus a Halley step) and the population skew/kurtosis
+  the formula needs all went into `stats.rs`.
+
+  **First real-data result, and it is the point of the work.** MSFT / RSI 5→30, 26
+  cells, `next_open`, 0.1 % slippage: the best cell is period 7 at Sharpe 0.55.
+  Uncorrected, that is a 92.3 % probability of beating zero. But the Sharpe spread
+  across the 26 trials is 0.168, so `SR*` — the Sharpe the best of 26 no-skill
+  trials would reach — is 0.338, and the deflated figure is **70.8 %**. The
+  winning cell does not survive the size of its own search. This is the same asset
+  whose pooled out-of-sample interval already straddled zero, so two independently
+  derived corrections agree, which is the cross-check that matters. AAPL /
+  ma_ema over 35 cells: Sharpe 0.847, uncorrected 98.5 %, deflated **94.1 %** —
+  still short of the bar.
+
+  Three judgement calls, each documented where it is made:
+
+  - **Cells that never traded count as trials.** They score exactly 0.0, which is
+    not a draw from the estimator's sampling distribution, and including them
+    inflates `Var[SR]` and therefore `SR*` — which *lowers* the deflated Sharpe.
+    That is the conservative direction, and principle 7 says the weaker result
+    ships. A `degenerate_trials_dominate` flag and a UI badge let a reader see
+    when the spread is an artefact of idle cells rather than a measure of the
+    search space.
+  - **The winner is the arg-max of Sharpe, whatever metric the chart ranks by.**
+    The formula's distributional assumptions are Sharpe's; deflating a CAGR
+    arg-max with it would be wrong, and quietly wrong. The panel says so when the
+    two can differ.
+  - **`trials_override` may only raise `N`, never lower it.** `N` from one sweep
+    cannot see the other strategies and assets a researcher tried, so a DSR from
+    one grid is an **upper bound on significance**. The form exposes the honest
+    count as an input; a value below the grid size is a 422 rather than a silent
+    absent correction, because a malformed request and an uncomputable one must
+    stay distinguishable from the response alone.
+
+  Two by-products worth naming. `run_sweep` now holds every cell's return path
+  while it runs, which is exactly the trials × observations matrix CSCV needs —
+  the next item's prerequisite, built. And `stats::population_std_dev` snaps
+  float dust to zero, because ten copies of `0.02` do not sum to `0.2` and
+  standardised moments amplify that into a skewness of 1.0.
+
+  **What this does not fix.** Trial multiplicity *across* sweeps, assets and
+  folds. The deflation treats adjacent parameter values as independent draws,
+  which they plainly are not — correlated trials mean the effective `N` is smaller
+  than the nominal one, in the optimistic direction. That needs PBO, below.
+- ⬅️ **Probability of Backtest Overfitting** via combinatorially-symmetric
+  cross-validation (Bailey, Borwein, López de Prado & Zhu 2017). **Next up.**
+  Answers "what fraction of the time does my in-sample winner underperform the
+  median out-of-sample?" — a single number per research process, which is the
+  honest unit of measurement for a parameter search, and the correction the
+  Deflated Sharpe explicitly cannot supply. The prerequisite is already in place:
+  `run_sweep` holds the full trials × observations return matrix that CSCV
+  partitions.
 - **Combinatorial purged cross-validation** (López de Prado, *AFML* ch. 12) as
   an upgrade path from rolling walk-forward. 5 rolling folds give 5 test paths;
   CPCV over the same data gives hundreds, which is what makes PBO estimable in

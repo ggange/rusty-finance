@@ -271,6 +271,26 @@ the purest form of overfitting available to you; the more combinations you try,
 the higher the best in-sample number goes, whether or not there's any signal.
 That's what the next tab is for.
 
+**The panel now quantifies that for you.** Under the green "best combination"
+callout sits the **Deflated Sharpe Ratio** (Bailey & López de Prado 2014): the
+probability that the winning cell's Sharpe beats what a search of this size
+reaches with no skill at all. It is shown beside the *uncorrected* figure, and the
+gap between them is the cost of the search. On MSFT with RSI 5→30 — 26 cells —
+the best cell scores Sharpe 0.55, which is a 92 % chance of beating zero but only
+a **71 %** chance of beating the best of 26 coin flips. Below 95 %, the badge says
+so.
+
+Two things to know about the number:
+
+- **It counts the trials in *this* grid only.** It cannot see the other
+  strategies, the other assets, or the grids you ran yesterday, so treat it as an
+  *upper bound* on significance. The "trials to deflate against" field lets you
+  supply the honest count; a value below the grid size is rejected rather than
+  honoured.
+- **It describes the Sharpe-selected cell**, whatever metric the chart is ranking
+  by, because the formula's distributional assumptions are Sharpe's. When you
+  switch the metric the panel says this explicitly.
+
 ---
 
 ## 8. Walk-forward tab
@@ -319,11 +339,13 @@ any number from it.
   report a bootstrap confidence interval on the Backtest and Walk-forward tabs;
   max drawdown reports a spread only, because block resampling breaks up the
   multi-month trends that produce deep drawdowns and percentile endpoints there
-  would read as optimistic. What no interval fixes: the sweep's "best combo"
-  callout is still an uncorrected arg-max over the grid, so a winning cell is a
-  biased estimate no matter how tight its neighbours look. Deflated Sharpe is the
-  next roadmap item. The sweep grid deliberately shows no intervals at all — a
-  grid of independent 95 % bands invites exactly that misreading.
+  would read as optimistic. What no interval fixes: a band around a *selected*
+  maximum has no valid frequentist reading, so the sweep's "best combo" callout
+  needed a different correction and now carries one — see the Deflated Sharpe
+  Ratio in §7. The sweep grid still deliberately shows no intervals at all: a grid
+  of independent 95 % bands invites exactly that misreading. Still uncorrected:
+  trial multiplicity *across* sweeps, assets and folds, which needs the
+  probability of backtest overfitting.
 - **A per-fold interval is not an interval for an average across folds**, and
   folds over correlated assets in the same calendar window are not independent
   observations. Use the pooled panel for a single-asset run; there is no
@@ -425,7 +447,10 @@ make dev
 ```
 
 1. **Sweep** (Parameter sweep tab): RSI on AAPL.csv, `period` 5→30 step 1.
-   Look at the surface. Is there a plateau, or a spike?
+   Look at the surface. Is there a plateau, or a spike? Then read the deflated
+   Sharpe under the best-combination box: if the winner doesn't survive the size
+   of its own search, the shape of the surface is the only thing here worth
+   carrying forward.
 2. **Walk-forward** (Walk-forward tab): same grid, 5 windows, train 0.7,
    metric `sharpe_ratio`. Are test Sharpes positive in most folds? Do the
    selected periods cluster? Ignore how *large* the test Sharpes are — at this
@@ -518,7 +543,8 @@ Each of these produces a *plausible* number, which is what makes them dangerous.
 2. **`fill_timing: "close"`.** Buys at a price you couldn't have known. It
    inflates every high-frequency signal.
 3. **Picking the sweep's best cell.** In-sample maximum, by construction. Use
-   walk-forward.
+   walk-forward — and read the deflated Sharpe first, which tells you how much of
+   that maximum the search bought. A cell below 95 % there is not a candidate.
 4. **Judging by total return.** Higher return with a worse Sharpe and a deeper
    drawdown is a worse strategy. §6's max-Sharpe result is exactly this trap.
 5. **Trusting `max_sharpe`.** It needs expected returns, which are the hardest
